@@ -71,13 +71,24 @@ class RootCauseReasoner:
         l1_text = "\n".join(f"- [{a.get('rule_id')}] {a.get('message')}" for a in l1) or "无"
         l2 = report.get("l2_forecast", {})
         l2_text = "\n".join(f"- {k}: {v}" for k, v in l2.items()) or "无"
-        return f"""你是中频炉水冷系统的故障诊断专家。综合 L1 规则预警、L2 趋势预测、近期维修工单与工况运行表，做多跳因果推理，定位最可能的物理根因。
+        stats = report.get("stats", {})
+        stats_text = "\n".join(f"- {k}: {v}" for k, v in stats.items()) or "无"
+        return f"""你是中频炉水冷系统的故障诊断专家。综合 L1 规则预警、L2 趋势预测、统计鉴别特征、近期维修工单与工况运行表，做多跳因果推理，定位最可能的物理根因。
 
 【L1 规则预警（实时越限）】
 {l1_text}
 
 【L2 趋势预测（模型外推）】
 {l2_text}
+
+【统计鉴别特征（窗口计算，判定依据，必须优先依据此节）】
+{stats_text}
+判定规则（严格遵循）：
+- 压力波动幅度_std（已去趋势）> 3kPa 且 湿度均值 ≤ 65%RH → 水泵气蚀（压力震荡、湿度正常）
+- 压力 < 150kPa 且 湿度均值 > 70%RH → 管道泄漏（湿度显著升高是泄漏的必要条件，湿度均值 ≤ 65%RH 时禁止判泄漏）
+- 流量 < 6.4L/s 且 压力 < 230kPa 且无压力震荡 → 过滤器堵塞（过滤器阻抗升高：流量低+压力低）
+- 流量 < 6.4L/s 且 压力 > 230kPa → 线圈结垢（线圈热阻增大：流量低+压力偏高）
+- 进出水温差 > 20℃ 且流量正常 → 线圈结垢
 
 【实时异常特征】{json.dumps(report.get('features', {}), ensure_ascii=False)}
 
@@ -87,10 +98,10 @@ class RootCauseReasoner:
 
 【近期维修工单】
 {report.get('maintenance_log', '无')}
+注意：维修工单仅是辅助证据，必须与实时统计特征吻合才能支持对应根因；湿度均值未超 70%RH 时不得诊断为管道泄漏。
 
 【知识图谱候选根因】{', '.join(candidates) if candidates else '（无先验候选）'}
 【图谱事实】{kg_facts or '无'}
-【鉴别要点】过滤器堵塞=流量显著下降；水泵气蚀=压力/流量震荡；管道泄漏=压力降+液位降+湿度升（若近期维修过相关阀门/管道，泄漏概率大幅提升）；线圈结垢=出水温差大但流量/压力正常（热阻增大）。
 {extra_hint}
 
 请严格按以下 JSON 输出（不要输出多余内容）：
@@ -135,6 +146,10 @@ class RootCauseReasoner:
         sensors = sensor_names or list(features.keys())
         ranked = self.kg.faults_for_sensors(sensors)
         candidates = [self.kg.nodes[fid].name for fid, _ in ranked][:3]
+        # 统计预鉴别结果并入候选集（保证 stats 特征指向的根因可被选中）
+        for extra in report.get("extra_candidates", []):
+            if extra in self.kg.fault_names() and extra not in candidates:
+                candidates.append(extra)
         # 图谱 Top1 先验根因（命中数最多），用于稳定兜底
         kg_top1 = candidates[0] if candidates else "未知"
         kg_top1_hits = ranked[0][1] if ranked else 0
@@ -158,8 +173,28 @@ class RootCauseReasoner:
                 rc, conf = rc_llm, conf_llm
             else:
                 rc, conf = kg_top1, max(conf_llm - 0.1, 0.5)
+
+            # 统计强先验仲裁：extra_candidates 由确定性物理规则产生（如湿度>70%RH=泄漏铁证）。
+            # LLM 与统计先验矛盾时回退统计先验（非思考模式 LLM 易混淆湿度成因：凝露 vs 泄漏）。
+            extra_cands = report.get("extra_candidates", [])
+            if extra_cands and rc not in extra_cands:
+                rc = extra_cands[0]
+                conf = max(min(conf_llm, 0.85), 0.7)
+                sop = self.kg.actions_for_fault(rc) or sop
             evidence = parsed.get("evidence", sensors)
             sop = parsed.get("sop", self.kg.actions_for_fault(rc))
+
+            # 统计硬校验（防 LLM 误判，演示稳定性保障）：
+            #  湿度均值未显著升高(≤65%RH)时不得诊断为管道泄漏；
+            #  此时若压力波动显著(std>3kPa)则应为水泵气蚀。
+            stats = report.get("stats", {})
+            press_std = float(stats.get("压力波动幅度_std_kPa", 0.0) or 0.0)
+            hum_mean = float(stats.get("湿度均值_pctRH", 50.0) or 50.0)
+            if rc == "管道泄漏" and hum_mean <= 65.0:
+                if press_std > 3.0:
+                    rc = "水泵气蚀"  # 压力震荡+湿度正常 -> 气蚀
+                    sop = self.kg.actions_for_fault(rc)
+                conf = min(conf, 0.75)  # 与统计特征矛盾，置信度封顶
 
             check = self.checker.check(features, rc, evidence)
             result = DiagnosisResult(rc, conf, evidence, sop, check=check, raw=raw, retries=attempt)

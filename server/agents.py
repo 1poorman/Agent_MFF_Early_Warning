@@ -41,7 +41,7 @@ class DataManagementAgent:
         返回格式保持不变（L1/L2 数据契约）。
         """
         from simulator import DataSimulator, FaultSpec, SimConfig
-        faults = [FaultSpec(name=fault, start=fault_start, ramp=600, severity=severity)] if fault else []
+        faults = [FaultSpec(name=fault, start=fault_start, ramp=300, severity=severity)] if fault else []
         sim = DataSimulator(config=SimConfig(seed=42), faults=faults)
         df = sim.run(duration)
         return self.ingest(df.to_dict("records"))
@@ -159,15 +159,28 @@ class WarningAnalysisAgent:
                        "流量": "flow_rate", "水箱液位": "tank_level", "湿度": "cabinet_humidity",
                        "电导率": "conductivity"}
             features = {s: float(last[c]) for s, c in col_map.items() if c in df.columns}
-            # 窗口统计特征（气蚀/泄漏鉴别）
-            if "cabinet_humidity" in df.columns:
-                features["湿度"] = float(df["cabinet_humidity"].mean())
-            if "pressure" in df.columns:
-                features["_press_std"] = float(df["pressure"].std())
+            # 窗口统计鉴别特征（气蚀/泄漏/堵塞/结垢区分的决定性依据，注入 LLM 提示）
+            # 取最近 120s 尾段统计，避免故障前正常段稀释（爬升期整窗均值会失真）
+            tail = df.iloc[-120:] if len(df) >= 120 else df
+            stats = {}
+            if "pressure" in tail.columns:
+                stats["压力波动幅度_std_kPa"] = round(self._detrended_std(tail["pressure"]), 2)
+                stats["压力均值_kPa"] = round(float(tail["pressure"].mean()), 1)
+            if "cabinet_humidity" in tail.columns:
+                stats["湿度均值_pctRH"] = round(float(tail["cabinet_humidity"].mean()), 1)
+                features["湿度"] = stats["湿度均值_pctRH"]
+            if "flow_rate" in tail.columns:
+                stats["流量均值_Lps"] = round(float(tail["flow_rate"].mean()), 2)
+            if "tank_level" in tail.columns:
+                stats["液位均值_cm"] = round(float(tail["tank_level"].mean()), 1)
+            features["_press_std"] = stats.get("压力波动幅度_std_kPa", 0.0)
+            # 统计预鉴别：依据 stats 计算倾向根因，并入 LLM 候选集（防图谱召回漏检）
+            extra_cands = self._stat_precheck(features, stats)
             try:
                 diag = self.svc.diagnose(
                     features, str(last.get("operating_condition", "unknown")), sensors,
-                    l1_alerts=l1, l2_forecast={"anomaly_score": l2["anomaly_score"]})
+                    l1_alerts=l1, l2_forecast={"anomaly_score": l2["anomaly_score"]},
+                    stats=stats, extra_candidates=extra_cands)
             except Exception:
                 diag = self.svc.pipeline._fallback_diagnose(sensors, features)
             diagnosis = diag.to_dict()
@@ -195,6 +208,34 @@ class WarningAnalysisAgent:
                 "operating_schedule": "工况运行表",
             },
         }
+
+    @staticmethod
+    def _detrended_std(s) -> float:
+        """去趋势标准差：剔除线性趋势后残差的 std，专测震荡幅度（爬升趋势不计入）。"""
+        import numpy as np
+        v = s.to_numpy(dtype=float)
+        if len(v) < 10:
+            return float(np.std(v))
+        t = np.arange(len(v))
+        slope, intercept = np.polyfit(t, v, 1)
+        resid = v - (slope * t + intercept)
+        return float(np.std(resid))
+
+    @staticmethod
+    def _stat_precheck(features: Dict, stats: Dict) -> List[str]:
+        """统计预鉴别：返回倾向根因列表（与提示词判定规则一致）。"""
+        out = []
+        hum = float(stats.get("湿度均值_pctRH", 50.0))
+        press = float(stats.get("压力均值_kPa", features.get("压力", 240.0)))
+        press_std = float(stats.get("压力波动幅度_std_kPa", 0.0))
+        flow = float(stats.get("流量均值_Lps", features.get("流量", 8.0)))
+        if hum > 70:
+            out.append("管道泄漏")
+        elif press_std > 3.0:
+            out.append("水泵气蚀")
+        if flow < 6.4:
+            out.append("线圈结垢" if press > 230 else "过滤器堵塞")
+        return out
 
 
 # ---------------------------------------------------------------------------

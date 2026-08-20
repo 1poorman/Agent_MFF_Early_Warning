@@ -191,17 +191,21 @@ class EarlyWarningPipeline:
         # 数值鉴别（特征组合越特异越优先；不依赖未触发规则的字段）
         delta_t = (out_t - in_t) if (out_t is not None and in_t is not None) else None
         press_std = f.get("_press_std", 0.0)
+        # 判定优先级：越特异的统计组合越优先
         # 湿度是气蚀/泄漏的决定性区分特征（泄漏->湿度升高，气蚀->湿度正常）
+        # 压力水平区分堵塞/结垢：堵塞(过滤器阻抗)->流量低压力低；结垢(线圈阻抗)->流量低压力高
         if hum is not None and hum > 70 and press is not None and press < 150:
             rc = "管道泄漏"                                    # 压力低+湿度显著升高（最特异）
         elif hum is not None and hum > 70:
             rc = "管道泄漏"                                    # 湿度显著升高（泄漏水汽）
+        elif press_std > 3.0 and (hum is None or hum <= 65):
+            rc = "水泵气蚀"                                    # 压力去趋势震荡显著且湿度正常（气蚀脉动）
+        elif flow is not None and flow < 6.4 and press is not None and press > 230:
+            rc = "线圈结垢"                                    # 流量低+压力偏高（线圈热阻增大）
+        elif flow is not None and flow < 6.4 and (hum is None or hum <= 70) and press_std < 3.0:
+            rc = "过滤器堵塞"                                  # 流量持续不足+压力偏低+无震荡（过滤器阻抗升高）
         elif delta_t is not None and delta_t > 20 and press is not None and press > 200:
             rc = "线圈结垢"                                    # 温差大且压力偏高（热阻增大，管网未堵）
-        elif flow is not None and flow < 6.4 and (hum is None or hum <= 70):
-            rc = "过滤器堵塞"                                  # 流量显著不足且无湿度异常（阻抗升高）
-        elif press_std > 3.0 and (hum is None or hum <= 65):
-            rc = "水泵气蚀"                                    # 压力大幅震荡且湿度正常（气蚀脉动）
         elif press is not None and flow is not None and 150 <= press < 200 and flow < 7.5:
             rc = "水泵气蚀"                                    # 压力/流量中位震荡
         if rc is None:

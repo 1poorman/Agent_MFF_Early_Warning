@@ -155,14 +155,55 @@ class AgentService:
             for s, c in col_map.items():
                 if c in df.columns:
                     features[s] = float(last[c])
+            # 尾段统计鉴别特征（最近120s，避免故障前正常段稀释）
+            tail = df.iloc[-120:] if len(df) >= 120 else df
+            stats = {}
+            if "cabinet_humidity" in tail.columns:
+                stats["湿度均值_pctRH"] = round(float(tail["cabinet_humidity"].mean()), 1)
+                features["湿度"] = stats["湿度均值_pctRH"]
+            if "pressure" in tail.columns:
+                # 去趋势 std：剔除爬升趋势后专测震荡幅度（气蚀特征）
+                import numpy as np
+                v = tail["pressure"].to_numpy(dtype=float)
+                if len(v) >= 10:
+                    t = np.arange(len(v))
+                    slope, intercept = np.polyfit(t, v, 1)
+                    press_std = float(np.std(v - (slope * t + intercept)))
+                else:
+                    press_std = float(np.std(v))
+                stats["压力波动幅度_std_kPa"] = round(press_std, 2)
+            features["_press_std"] = stats.get("压力波动幅度_std_kPa", 0.0)
             try:
-                diag = self.diagnose(features, str(last.get("operating_condition", "unknown")), sensors)
+                diag = self.diagnose(features, str(last.get("operating_condition", "unknown")),
+                                     sensors, stats=stats)
             except Exception:
                 # LLM 失败/超时 -> 图谱+数值鉴别兜底，不阻塞实时流
                 diag = self.pipeline._fallback_diagnose(sensors, features)
                 diag.confidence = min(diag.confidence, 0.65)  # 标注降级置信度
             out["l3"] = diag.to_dict()
             self.l3_log.append({"timestamp": out["timestamp"], **diag.to_dict()})
+
+            # ---- 驱动③ 故障处置智能体：自动生成工单+推送 ----
+            try:
+                from .agents import FaultHandlingAgent
+                fh = FaultHandlingAgent(self)
+                analysis = {"level": "orange", "timestamp": out["timestamp"],
+                            "l1": {"triggered": bool(l1), "alerts": l1},
+                            "l2": l2, "l3": out["l3"]}
+                wo = fh.handle(analysis)
+                out["work_order"] = wo if wo.get("handled") else None
+                if wo.get("handled"):
+                    self.l3_log[-1]["order_id"] = wo.get("order_id")
+                    # ---- 驱动④ 持续优化智能体：模拟运维反馈归档 ----
+                    from .agents import ContinuousOptimizerAgent
+                    co = ContinuousOptimizerAgent(self)
+                    fb = co.feedback(wo["order_id"], wo["root_cause"], True, 25.0,
+                                     "实时监测自动归档（演示）", wo)
+                    out["optimization"] = {"archived": fb["archived"],
+                                           "stats": fb["stats"]}
+            except Exception:
+                out["work_order"] = None
+                out["optimization"] = None
         return out
 
     def _should_diagnose(self, min_interval: int = 60) -> bool:
@@ -184,13 +225,15 @@ class AgentService:
         return {"l1": self.l1_log[-50:], "l2": self.l2_log[-50:], "l3": self.l3_log[-20:]}
 
     def diagnose(self, features, condition="unknown", sensor_names=None,
-                 l1_alerts=None, l2_forecast=None):
+                 l1_alerts=None, l2_forecast=None, stats=None, extra_candidates=None):
         """L3 根因诊断（注入完整上下文）。"""
         report = {
             "features": features,
             "condition": condition,
             "l1_alerts": l1_alerts or [],
             "l2_forecast": l2_forecast or {},
+            "stats": stats or {},
+            "extra_candidates": extra_candidates or [],
             "operating_schedule": self.sched.to_prompt_text(),
             "maintenance_log": self.maint.to_prompt_text(days=60),
         }

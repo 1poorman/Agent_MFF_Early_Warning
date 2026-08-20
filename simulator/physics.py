@@ -89,12 +89,13 @@ class PlantModel:
         # 气蚀：泵压振荡传导到流量
         osc = effects.get("pump_osc_amp", 0.0)
         if osc > 0.0:
-            st.flow += osc / r_total * 0.5 * np.sin(2 * np.pi * 0.5 * effects["t_rel"])
+            # 振荡频率 0.17Hz（周期~6s）：避免与 1Hz 采样混叠（0.5Hz 时 sin(πn)≡0）
+            st.flow += osc / r_total * 0.5 * np.sin(2 * np.pi * 0.17 * effects["t_rel"])
             st.flow = max(st.flow, 0.0)
 
         pressure = cfg.static_pressure + cfg.coil_resistance * effects.get("r_coil_mult", 1.0) * st.flow ** 2
         if osc > 0.0:
-            pressure += osc * np.sin(2 * np.pi * 0.5 * effects["t_rel"])
+            pressure += osc * np.sin(2 * np.pi * 0.17 * effects["t_rel"])
         pressure = max(pressure, 0.0)
 
         velocity = st.flow * 1e-3 / cfg.pipe_area  # L/s -> m/s

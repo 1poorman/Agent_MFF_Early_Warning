@@ -23,7 +23,7 @@ HAMPEL_N_SIGMA = 5.0
 MAX_RATE_PER_S: Dict[str, float] = {
     "inlet_temp": 0.5,
     "outlet_temp": 0.5,
-    "pressure": 10.0,           # kPa/s
+    "pressure": 50.0,           # kPa/s（气蚀等真实压力震荡可达 ±14kPa@0.5Hz，需保留；尖刺由 Hampel 拦截）
     "flow_rate": 0.5,           # L/s per s
     "flow_velocity": 0.2,
     "tank_level": 5.0,          # cm/s（补水阀切换瞬间允许较大变化）

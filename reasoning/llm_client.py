@@ -27,8 +27,10 @@ def load_env_config(path: str = ".env") -> dict:
 class LLMClient:
     """大模型客户端。"""
 
-    def __init__(self, config: Optional[dict] = None, prefer: str = "big", timeout: float = 60.0):
+    def __init__(self, config: Optional[dict] = None, prefer: str = "big",
+                 timeout: float = 60.0, enable_thinking: bool = False):
         cfg = config or load_env_config()
+        self.enable_thinking = enable_thinking
         if prefer == "big" and cfg.get("url"):
             base = cfg["url"]
             base = base if base.startswith("http") else "http://" + base
@@ -42,17 +44,25 @@ class LLMClient:
 
     def chat(self, prompt: str, system: str = "", max_tokens: int = 1500,
              temperature: float = 0.2) -> str:
-        """对话推理，返回文本（兼容推理模型的 reasoning 字段）。"""
+        """对话推理，返回文本（兼容推理模型的 reasoning 字段）。
+
+        enable_thinking=False 时通过 chat_template_kwargs 关闭思考模式（vLLM），
+        大幅加速推理；输出直接进入 content。
+        """
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
+        extra = {}
+        if not self.enable_thinking:
+            extra["chat_template_kwargs"] = {"enable_thinking": False}
         r = self.client.chat.completions.create(
             model=self.model, messages=messages,
             max_tokens=max_tokens, temperature=temperature,
+            extra_body=extra,
         )
         msg = r.choices[0].message
-        # 推理模型：content 可能为 None，思考在 reasoning；优先 content，空则取 reasoning
+        # 兼容：思考模式关闭时输出在 content；开启时 content 可能为 None，思考在 reasoning
         content = getattr(msg, "content", None)
         if content:
             return content

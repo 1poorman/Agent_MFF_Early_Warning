@@ -47,7 +47,8 @@ def _apply_filter_clog(spec: FaultSpec, prog: float, t_rel: float, eff: Dict[str
 
 def _apply_pump_cavitation(spec: FaultSpec, prog: float, t_rel: float, eff: Dict[str, float]) -> None:
     eff["pump_head_delta"] = eff.get("pump_head_delta", 0.0) - 0.04 * prog
-    eff["pump_osc_amp"] = eff.get("pump_osc_amp", 0.0) + 0.02 * prog
+    # 振荡幅度整定：0.004·prog MPa 使压力波动 std 约 6~12kPa（去趋势后可稳定检出，不至失真）
+    eff["pump_osc_amp"] = eff.get("pump_osc_amp", 0.0) + 0.004 * prog
     eff["t_rel"] = t_rel
 
 
