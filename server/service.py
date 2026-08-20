@@ -80,6 +80,109 @@ class AgentService:
         self.latest_result = result
         return result
 
+    # ---------------- 流式实时处理 ----------------
+
+    def reset_stream(self, max_points: int = 600):
+        """重置实时流缓冲。"""
+        self.stream_buf = []                 # 最近 max_points 条原始记录
+        self.stream_max = max_points
+        self.l1_log = []                     # L1 预警日志
+        self.l2_log = []                     # L2 趋势/异常日志
+        self.l3_log = []                     # L3 根因诊断日志
+        self._stream_cols = ["inlet_temp", "outlet_temp", "pressure", "flow_rate",
+                             "tank_level", "cabinet_temp", "cabinet_humidity",
+                             "furnace_temp", "electric_power"]
+
+    def stream_step(self, row: dict) -> dict:
+        """逐条处理实时数据，返回各级预警与当前指标。"""
+        if not hasattr(self, "stream_buf"):
+            self.reset_stream()
+        self.stream_buf.append(row)
+        if len(self.stream_buf) > self.stream_max:
+            self.stream_buf.pop(0)
+        df = pd.DataFrame(self.stream_buf)
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+
+        out = {"timestamp": str(row["timestamp"]), "metrics": {}}
+        for c in self._stream_cols:
+            if c in row:
+                out["metrics"][c] = row[c]
+
+        # L1 规则（瞬时）
+        try:
+            row_clean = self.qc.process(df).iloc[-1] if len(df) > 1 else df.iloc[-1]
+            l1 = self.rule_engine.evaluate_row(row_clean.to_dict())
+        except Exception:
+            l1 = []
+        out["l1"] = [a.as_dict() for a in l1]
+        for a in l1:
+            self.l1_log.append(a.as_dict())
+
+        # L2 异常检测 + 趋势（窗口足够时）
+        out["l2"] = {"anomaly_score": 0.0, "exceed_eta": None}
+        det = self.pipeline.detector
+        if det is not None and len(df) >= det.window:
+            try:
+                score = float(det.score(df).iloc[-1])
+                out["l2"]["anomaly_score"] = round(score, 3)
+                if score > det.threshold:
+                    self.l2_log.append({"timestamp": out["timestamp"],
+                                        "type": "anomaly", "score": round(score, 3)})
+            except Exception:
+                pass
+        # 趋势越限预测（出水温度）
+        fm = self.pipeline.fast_models.get("outlet_temp")
+        if fm is not None and len(df) >= 120:
+            try:
+                eta = fm.predict_exceedance(df["outlet_temp"], 55.0, lookback_s=min(120, len(df)))
+                if eta is not None:
+                    out["l2"]["exceed_eta"] = round(eta, 1)
+                    self.l2_log.append({"timestamp": out["timestamp"], "type": "trend",
+                                        "msg": f"预测出水温度 {eta/60:.1f}min 后越限 55℃"})
+            except Exception:
+                pass
+
+        # L3 根因诊断（L1 触发 或 异常分超阈 时触发，节流）
+        out["l3"] = None
+        anomaly_high = out["l2"]["anomaly_score"] > (det.threshold if det else 0.6)
+        if (l1 or anomaly_high) and self._should_diagnose():
+            sensors = list({self._rule_sensor(a["rule_id"]) for a in l1} - {""}) or \
+                      ["出水温度", "压力", "流量", "湿度"]
+            features = {}
+            col_map = {"出水温度": "outlet_temp", "进水温度": "inlet_temp", "压力": "pressure",
+                       "流量": "flow_rate", "水箱液位": "tank_level", "湿度": "cabinet_humidity"}
+            last = df.iloc[-1]
+            for s, c in col_map.items():
+                if c in df.columns:
+                    features[s] = float(last[c])
+            try:
+                diag = self.diagnose(features, str(last.get("operating_condition", "unknown")), sensors)
+            except Exception:
+                # LLM 失败/超时 -> 图谱+数值鉴别兜底，不阻塞实时流
+                diag = self.pipeline._fallback_diagnose(sensors, features)
+                diag.confidence = min(diag.confidence, 0.65)  # 标注降级置信度
+            out["l3"] = diag.to_dict()
+            self.l3_log.append({"timestamp": out["timestamp"], **diag.to_dict()})
+        return out
+
+    def _should_diagnose(self, min_interval: int = 60) -> bool:
+        """L3 诊断节流：避免每条都调 LLM（默认 60s 一次）。"""
+        import time as _t
+        now = _t.time()
+        last = getattr(self, "_last_diag_t", 0)
+        if now - last >= min_interval:
+            self._last_diag_t = now
+            return True
+        return False
+
+    @staticmethod
+    def _rule_sensor(rule_id: str) -> str:
+        from workflow.pipeline import RULE_TO_SENSOR
+        return RULE_TO_SENSOR.get(rule_id, "")
+
+    def get_stream_logs(self):
+        return {"l1": self.l1_log[-50:], "l2": self.l2_log[-50:], "l3": self.l3_log[-20:]}
+
     def diagnose(self, features, condition="unknown", sensor_names=None,
                  l1_alerts=None, l2_forecast=None):
         """L3 根因诊断（注入完整上下文）。"""

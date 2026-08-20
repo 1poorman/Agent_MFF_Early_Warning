@@ -8,11 +8,12 @@
     http://localhost:8000/      (Web Demo)
 """
 
+import asyncio
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -176,6 +177,56 @@ def latest():
             "cabinet_humidity": df["cabinet_humidity"].tolist(),
         }
     return {"code": 0, "data": out}
+
+
+# ---------------- 实时流（WebSocket） ----------------
+
+class StreamRequest(BaseModel):
+    fault: Optional[str] = None
+    fault_start: int = 120
+    speed: float = 20.0          # 回放倍速（条/秒）
+    duration: int = 1800
+
+
+@app.websocket("/ws/stream")
+async def stream_ws(ws: WebSocket):
+    """实时流：simulator 逐秒生成数据 -> 逐条处理 -> 推送指标与 L1/L2/L3 预警。"""
+    await ws.accept()
+    s = svc()
+    s.reset_stream()
+    try:
+        req_raw = await ws.receive_json()
+        fault = req_raw.get("fault")
+        fault_start = int(req_raw.get("fault_start", 120))
+        speed = float(req_raw.get("speed", 20.0))
+        duration = int(req_raw.get("duration", 1800))
+
+        from simulator import DataSimulator, FaultSpec, SimConfig
+        faults = [FaultSpec(name=fault, start=fault_start, ramp=600, severity=0.9)] if fault else []
+        sim = DataSimulator(config=SimConfig(seed=42), faults=faults)
+
+        interval = 1.0 / max(speed, 1.0)
+        loop = asyncio.get_event_loop()
+        for _ in range(duration):
+            row = sim._sense(sim.step())   # 带测量噪声的传感器读数
+            row["timestamp"] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+            # stream_step 含潜在 LLM 同步推理，放入线程池避免阻塞事件循环（WS keepalive）
+            out = await loop.run_in_executor(None, s.stream_step, row)
+            await ws.send_json(out)
+            await asyncio.sleep(interval)
+        await ws.send_json({"done": True})
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        try:
+            await ws.send_json({"error": str(e)})
+        except Exception:
+            pass
+
+
+@app.get("/api/v1/stream/logs")
+def stream_logs():
+    return {"code": 0, "data": svc().get_stream_logs()}
 
 
 # ---------------- Web 界面 ----------------

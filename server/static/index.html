@@ -8,184 +8,247 @@
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   body { font-family:"PingFang SC","Microsoft YaHei",sans-serif; background:#0d1421; color:#dce3ee; }
-  header { background:linear-gradient(90deg,#132038,#1a2c4e); padding:16px 28px; display:flex;
+  header { background:linear-gradient(90deg,#132038,#1a2c4e); padding:14px 26px; display:flex;
            justify-content:space-between; align-items:center; border-bottom:1px solid #233457; }
-  header h1 { font-size:20px; font-weight:600; color:#5ec1ff; }
-  .status { font-size:13px; }
+  header h1 { font-size:19px; font-weight:600; color:#5ec1ff; }
   .badge { display:inline-block; padding:2px 10px; border-radius:10px; margin-left:8px; font-size:12px; }
   .b-ok { background:#1c4d2e; color:#5ee08a; }
   .b-warn { background:#5e4a16; color:#ffcf5e; }
-  .grid { display:grid; grid-template-columns:2fr 1fr; gap:16px; padding:18px 28px; }
-  .card { background:#141d2e; border:1px solid #223456; border-radius:10px; padding:16px; }
-  .card h2 { font-size:15px; color:#8fb3e8; margin-bottom:12px; font-weight:600; }
-  #chart { width:100%; height:340px; }
-  .controls { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
+  .b-run { background:#1f6feb; color:#fff; }
+
+  .controls { display:flex; gap:10px; align-items:center; padding:14px 26px; background:#101a2c;
+              border-bottom:1px solid #1d2f52; flex-wrap:wrap; }
   select,button { background:#1c2c4a; color:#dce3ee; border:1px solid #2e4a7a; border-radius:6px;
-                  padding:8px 14px; font-size:13px; cursor:pointer; }
+                  padding:7px 13px; font-size:13px; cursor:pointer; }
   button:hover { background:#27406b; }
   button.primary { background:#1f6feb; border-color:#1f6feb; }
-  button.primary:hover { background:#2b7fff; }
-  .metrics { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:14px; }
-  .metric { background:#182640; border:1px solid #26406b; border-radius:8px; padding:12px; }
-  .metric .v { font-size:24px; font-weight:700; color:#5ec1ff; }
-  .metric .l { font-size:12px; color:#7f93b8; margin-top:4px; }
-  .wo { background:#101a2c; border-left:3px solid #ff5e5e; border-radius:6px; padding:12px; margin-top:10px; font-size:13px; }
-  .wo.orange { border-left-color:#ffae42; }
-  .wo.yellow { border-left-color:#ffe14d; }
-  .wo h3 { font-size:14px; margin-bottom:6px; }
-  .wo .row { margin:4px 0; color:#b9c6dd; }
-  .wo .tag { font-size:11px; padding:1px 8px; border-radius:8px; margin-right:6px; }
-  .t-red { background:#5e1c1c; color:#ff8a8a; }
-  .t-orange { background:#5e4216; color:#ffcf8a; }
-  .log { font-family:monospace; font-size:12px; max-height:200px; overflow-y:auto; background:#0a1120; padding:10px; border-radius:6px; }
-  .log div { padding:2px 0; }
+  button.danger { background:#8a2626; border-color:#8a2626; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+
+  .layout { display:grid; grid-template-columns: 1fr 1fr; gap:14px; padding:16px 26px; }
+  .card { background:#141d2e; border:1px solid #223456; border-radius:10px; padding:14px; }
+  .card h2 { font-size:14px; color:#8fb3e8; margin-bottom:10px; font-weight:600;
+             display:flex; justify-content:space-between; align-items:center; }
+  .card h2 .cnt { font-size:11px; color:#5ee08a; font-weight:400; }
+  .full { grid-column: 1 / -1; }
+  #chart { width:100%; height:300px; }
+
+  .metrics { display:grid; grid-template-columns:repeat(6,1fr); gap:10px; margin-bottom:12px; }
+  .metric { background:#182640; border:1px solid #26406b; border-radius:8px; padding:10px; text-align:center; }
+  .metric .v { font-size:20px; font-weight:700; color:#5ec1ff; }
+  .metric .l { font-size:11px; color:#7f93b8; margin-top:3px; }
+
+  .panel { font-family:monospace; font-size:12px; max-height:230px; overflow-y:auto;
+           background:#0a1120; padding:10px; border-radius:6px; }
+  .panel div { padding:3px 0; border-bottom:1px solid #16223a; }
+  .lv1 { color:#ffe14d; } .lv2 { color:#ffae42; } .lv3 { color:#ff8a8a; }
   .ok { color:#5ee08a; } .warn { color:#ffcf5e; } .err { color:#ff8a8a; }
   .muted { color:#6b7d9e; font-size:12px; }
+  .score { font-size:22px; font-weight:700; }
+  .wo { background:#101a2c; border-left:3px solid #ff5e5e; border-radius:6px; padding:10px; margin-top:8px; font-size:12px; }
+  .wo.orange { border-left-color:#ffae42; } .wo.yellow { border-left-color:#ffe14d; }
+  .wo .row { margin:3px 0; color:#b9c6dd; }
 </style>
 </head>
 <body>
 <header>
-  <h1>中频炉水冷系统预警智能体 · Demo</h1>
-  <div class="status">
-    <span id="sys-status">系统状态检测中...</span>
-  </div>
+  <h1>中频炉水冷系统预警智能体 · 实时监控 Demo</h1>
+  <div><span id="sys-status">检测中...</span><span id="run-status"></span></div>
 </header>
 
-<div class="grid">
-  <div>
-    <div class="card">
-      <h2>实时监测与仿真驱动</h2>
-      <div class="controls">
-        <select id="fault">
-          <option value="">正常工况</option>
-          <option value="filter_clog">过滤器堵塞</option>
-          <option value="pump_cavitation">水泵气蚀</option>
-          <option value="pipe_leak">管道泄漏</option>
-          <option value="scale_buildup">线圈结垢(缓变)</option>
-        </select>
-        <select id="duration">
-          <option value="300">5 分钟</option>
-          <option value="600">10 分钟</option>
-          <option value="1800">30 分钟</option>
-        </select>
-        <button class="primary" onclick="runSim()">▶ 运行仿真</button>
-        <button onclick="loadLatest()">↻ 刷新</button>
-      </div>
-      <div class="metrics">
-        <div class="metric"><div class="v" id="m-out">--</div><div class="l">出水温度 ℃</div></div>
-        <div class="metric"><div class="v" id="m-press">--</div><div class="l">压力 kPa</div></div>
-        <div class="metric"><div class="v" id="m-flow">--</div><div class="l">流量 L/s</div></div>
-        <div class="metric"><div class="v" id="m-hum">--</div><div class="l">湿度 %RH</div></div>
-      </div>
-      <div id="chart"></div>
+<div class="controls">
+  <label>故障场景:</label>
+  <select id="fault">
+    <option value="">正常工况</option>
+    <option value="filter_clog">过滤器堵塞</option>
+    <option value="pump_cavitation">水泵气蚀</option>
+    <option value="pipe_leak">管道泄漏</option>
+    <option value="scale_buildup">线圈结垢(缓变)</option>
+  </select>
+  <label>倍速:</label>
+  <select id="speed">
+    <option value="10">10x</option>
+    <option value="20" selected>20x</option>
+    <option value="60">60x</option>
+  </select>
+  <button class="primary" id="btn-start" onclick="startStream()">▶ 开始实时监测</button>
+  <button class="danger" id="btn-stop" onclick="stopStream()" disabled>■ 停止</button>
+  <span class="muted">数据每秒1条，按倍速回放；异常自动触发 L1/L2/L3 分级预警</span>
+</div>
+
+<div class="layout">
+  <!-- 实时曲线 -->
+  <div class="card full">
+    <h2>实时物理量监测 <span class="cnt" id="pt-count">0 点</span></h2>
+    <div class="metrics">
+      <div class="metric"><div class="v" id="m-inlet">--</div><div class="l">进水温度 ℃</div></div>
+      <div class="metric"><div class="v" id="m-out">--</div><div class="l">出水温度 ℃</div></div>
+      <div class="metric"><div class="v" id="m-press">--</div><div class="l">压力 kPa</div></div>
+      <div class="metric"><div class="v" id="m-flow">--</div><div class="l">流量 L/s</div></div>
+      <div class="metric"><div class="v" id="m-furn">--</div><div class="l">炉温 ℃</div></div>
+      <div class="metric"><div class="v" id="m-hum">--</div><div class="l">湿度 %RH</div></div>
     </div>
-    <div class="card" style="margin-top:16px">
-      <h2>工作流节点日志</h2>
-      <div class="log" id="nodelog"><div class="muted">等待运行...</div></div>
-    </div>
+    <div id="chart"></div>
   </div>
 
-  <div>
-    <div class="card">
-      <h2>预警与工单</h2>
-      <div id="wo-area"><div class="muted">暂无预警。运行仿真（选择故障）查看端到端工单。</div></div>
+  <!-- L1 -->
+  <div class="card">
+    <h2>L1 规则预警（毫秒级）<span class="cnt" id="l1-cnt">0</span></h2>
+    <div class="panel" id="l1-panel"><div class="muted">暂无预警</div></div>
+  </div>
+
+  <!-- L2 -->
+  <div class="card">
+    <h2>L2 趋势预测 / 异常检测 <span class="cnt" id="l2-cnt">0</span></h2>
+    <div style="margin-bottom:8px">
+      <span class="muted">异常分(VAE+IF): </span>
+      <span class="score" id="anomaly-score" style="color:#5ee08a">0.00</span>
+      <span class="muted" id="trend-msg"></span>
     </div>
-    <div class="card" style="margin-top:16px">
-      <h2>系统性能</h2>
-      <div class="log" id="perf"></div>
-    </div>
+    <div class="panel" id="l2-panel"><div class="muted">暂无预警</div></div>
+  </div>
+
+  <!-- L3 -->
+  <div class="card full">
+    <h2>L3 大模型根因诊断（三层防幻觉）<span class="cnt" id="l3-cnt">0</span></h2>
+    <div id="l3-area"><div class="muted">暂无诊断。当 L1 触发或 L2 异常分超阈时自动推理根因。</div></div>
   </div>
 </div>
 
 <script>
-let chart = echarts.init(document.getElementById('chart'), 'dark');
+const chart = echarts.init(document.getElementById('chart'), 'dark');
+const MAXP = 120;
+let buf = { inlet:[], out:[], press:[], flow:[], hum:[], ts:[] };
+let ws = null, l1n=0, l2n=0, l3n=0;
 
-function renderChart(series) {
-  if (!series) return;
-  chart.setOption({
-    backgroundColor: 'transparent',
-    tooltip: { trigger: 'axis' },
-    legend: { data: ['出水温度','压力','流量','湿度'], textStyle:{color:'#b9c6dd'} },
-    grid: { left: 50, right: 50, top: 40, bottom: 30 },
-    xAxis: { type: 'category', data: series.timestamp.map(t=>t.slice(11)), axisLabel:{color:'#7f93b8'} },
-    yAxis: [
-      { type:'value', name:'温度/湿度', axisLabel:{color:'#7f93b8'} },
-      { type:'value', name:'压力/流量', axisLabel:{color:'#7f93b8'} }
-    ],
-    series: [
-      { name:'出水温度', type:'line', data:series.outlet_temp, smooth:true, showSymbol:false, lineStyle:{color:'#ff8a5e'}, itemStyle:{color:'#ff8a5e'} },
-      { name:'压力', type:'line', yAxisIndex:1, data:series.pressure, smooth:true, showSymbol:false, lineStyle:{color:'#5ec1ff'}, itemStyle:{color:'#5ec1ff'} },
-      { name:'流量', type:'line', yAxisIndex:1, data:series.flow_rate, smooth:true, showSymbol:false, lineStyle:{color:'#5ee08a'}, itemStyle:{color:'#5ee08a'} },
-      { name:'湿度', type:'line', data:series.cabinet_humidity, smooth:true, showSymbol:false, lineStyle:{color:'#c98aff'}, itemStyle:{color:'#c98aff'} }
-    ]
+chart.setOption({
+  backgroundColor:'transparent',
+  tooltip:{trigger:'axis'},
+  legend:{data:['进水温度','出水温度','压力','流量','湿度'], textStyle:{color:'#b9c6dd'}},
+  grid:{left:50,right:55,top:36,bottom:26},
+  xAxis:{type:'category', data:[], axisLabel:{color:'#7f93b8'}},
+  yAxis:[
+    {type:'value', name:'温度/湿度', axisLabel:{color:'#7f93b8'}, splitLine:{lineStyle:{color:'#1d2f52'}}},
+    {type:'value', name:'压力/流量', axisLabel:{color:'#7f93b8'}, splitLine:{show:false}}
+  ],
+  series:[
+    {name:'进水温度', type:'line', data:[], smooth:true, showSymbol:false, lineStyle:{color:'#6aa8ff'}, itemStyle:{color:'#6aa8ff'}},
+    {name:'出水温度', type:'line', data:[], smooth:true, showSymbol:false, lineStyle:{color:'#ff8a5e'}, itemStyle:{color:'#ff8a5e'}},
+    {name:'压力', type:'line', yAxisIndex:1, data:[], smooth:true, showSymbol:false, lineStyle:{color:'#5ec1ff'}, itemStyle:{color:'#5ec1ff'}},
+    {name:'流量', type:'line', yAxisIndex:1, data:[], smooth:true, showSymbol:false, lineStyle:{color:'#5ee08a'}, itemStyle:{color:'#5ee08a'}},
+    {name:'湿度', type:'line', data:[], smooth:true, showSymbol:false, lineStyle:{color:'#c98aff'}, itemStyle:{color:'#c98aff'}}
+  ]
+});
+
+function pushPoint(d){
+  const m = d.metrics;
+  const t = (d.timestamp||'').slice(11);
+  buf.ts.push(t); buf.inlet.push(m.inlet_temp); buf.out.push(m.outlet_temp);
+  buf.press.push(m.pressure); buf.flow.push(m.flow_rate); buf.hum.push(m.cabinet_humidity);
+  if (buf.ts.length > MAXP){ for(const k in buf) buf[k].shift(); }
+  chart.setOption({ xAxis:{data:buf.ts},
+    series:[{data:buf.inlet},{data:buf.out},{data:buf.press},{data:buf.flow},{data:buf.hum}] });
+  setText('m-inlet', m.inlet_temp); setText('m-out', m.outlet_temp);
+  setText('m-press', m.pressure); setText('m-flow', m.flow_rate);
+  setText('m-furn', m.furnace_temp); setText('m-hum', m.cabinet_humidity);
+  document.getElementById('pt-count').textContent = buf.ts.length + ' 点';
+}
+function setText(id, v){ if(v!==undefined) document.getElementById(id).textContent = (+v).toFixed(1); }
+
+function renderL1(list){
+  if(!list || !list.length) return;
+  const p = document.getElementById('l1-panel');
+  if(l1n===0) p.innerHTML='';
+  list.forEach(a=>{
+    l1n++;
+    p.insertAdjacentHTML('afterbegin', `<div class="lv1">[${(a.timestamp||'').slice(11)}] <b>${a.rule_id}</b> ${a.message}</div>`);
   });
+  document.getElementById('l1-cnt').textContent = l1n;
+  while(p.children.length>40) p.lastChild.remove();
 }
 
-function setMetrics(series) {
-  if (!series) return;
-  const n = series.timestamp.length - 1;
-  document.getElementById('m-out').textContent = series.outlet_temp[n].toFixed(1);
-  document.getElementById('m-press').textContent = series.pressure[n].toFixed(1);
-  document.getElementById('m-flow').textContent = series.flow_rate[n].toFixed(1);
-  document.getElementById('m-hum').textContent = series.cabinet_humidity[n].toFixed(1);
+function renderL2(l2){
+  const sc = document.getElementById('anomaly-score');
+  sc.textContent = (l2.anomaly_score||0).toFixed(2);
+  sc.style.color = l2.anomaly_score > 0.6 ? '#ff8a8a' : '#5ee08a';
+  const tm = document.getElementById('trend-msg');
+  if(l2.exceed_eta){
+    tm.textContent = ` | 预测 ${(l2.exceed_eta/60).toFixed(1)}min 后出水温度越限`;
+    tm.style.color = '#ffae42';
+    l2n++;
+    const p=document.getElementById('l2-panel');
+    if(l2n===1) p.innerHTML='';
+    p.insertAdjacentHTML('afterbegin', `<div class="lv2">[趋势] 预测出水温度 ${(l2.exceed_eta/60).toFixed(1)}min 后越限 55℃</div>`);
+    document.getElementById('l2-cnt').textContent = l2n;
+  } else if (l2.anomaly_score > 0.6){
+    l2n++;
+    const p=document.getElementById('l2-panel');
+    if(l2n===1) p.innerHTML='';
+    p.insertAdjacentHTML('afterbegin', `<div class="lv2">[异常] VAE+IF 异常分 ${l2.anomaly_score.toFixed(2)} 超阈</div>`);
+    document.getElementById('l2-cnt').textContent = l2n;
+  }
 }
 
-function renderWO(wo, push) {
-  const area = document.getElementById('wo-area');
-  if (!wo) { area.innerHTML = '<div class="muted ok">✔ 当前窗口无异常，数据已过滤归档（未进入大模型）</div>'; return; }
-  const cls = wo.level==='red'?'':wo.level;
-  area.innerHTML = `
-    <div class="wo ${cls}">
-      <h3><span class="tag t-${wo.level}">${wo.level.toUpperCase()}</span>${wo.order_id}</h3>
-      <div class="row"><b>根因：</b>${wo.root_cause}（置信度 ${(wo.confidence*100).toFixed(0)}%）</div>
-      <div class="row"><b>特征：</b>${wo.features}</div>
-      <div class="row"><b>防幻觉：</b>物理${wo.hallucination_check.physics?'✔':'✘'} 图谱${wo.hallucination_check.kg?'✔':'✘'}</div>
-      <div class="row"><b>SOP：</b>${(wo.sop||[]).slice(0,3).join('；')}</div>
-      <div class="row"><b>备件：</b>${(wo.spare_parts||[]).join('、')||'无'}</div>
-      <div class="row muted">推送 ${push} 条（${wo.level==='red'?'声光+短信+电话':wo.level==='orange'?'APP+短信':'APP'}）</div>
+function renderL3(d){
+  if(!d) return;
+  l3n++;
+  document.getElementById('l3-cnt').textContent = l3n;
+  const lv = d.level||'orange';
+  const html = `
+    <div class="wo ${lv}">
+      <div class="row"><b style="color:#ff8a8a">[${lv.toUpperCase()}] 根因：${d.root_cause}</b> （置信度 ${(d.confidence*100).toFixed(0)}%）</div>
+      <div class="row"><b>证据：</b>${(d.evidence||[]).slice(0,2).join('；')}</div>
+      <div class="row"><b>防幻觉：</b>物理${d.hallucination_check.physics?'✔':'✘'} 图谱${d.hallucination_check.kg?'✔':'✘'}</div>
+      <div class="row"><b>SOP：</b>${(d.sop||[]).slice(0,3).join('；')}</div>
+      <div class="row muted">${d.timestamp||''}</div>
     </div>`;
+  const area = document.getElementById('l3-area');
+  if(l3n===1) area.innerHTML='';
+  area.insertAdjacentHTML('afterbegin', html);
+  while(area.children.length>5) area.lastChild.remove();
 }
 
-function renderNodes(nodes, latency) {
-  const el = document.getElementById('nodelog');
-  el.innerHTML = nodes.map(n =>
-    `<div><span class="${n.status==='ok'?'ok':'warn'}">●</span> [${n.name}] ${n.status} ${n.latency_ms.toFixed(0)}ms</div>`
-  ).join('') + `<div class="muted">端到端总时延 ${latency.toFixed(0)}ms</div>`;
+function startStream(){
+  buf = { inlet:[], out:[], press:[], flow:[], hum:[], ts:[] };
+  l1n=l2n=l3n=0;
+  ['l1-panel','l2-panel'].forEach(id=>document.getElementById(id).innerHTML='<div class="muted">暂无预警</div>');
+  document.getElementById('l3-area').innerHTML='<div class="muted">监测中...</div>';
+  const proto = location.protocol==='https:'?'wss':'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws/stream`);
+  ws.onopen = ()=>{
+    document.getElementById('run-status').innerHTML='<span class="badge b-run">监测中</span>';
+    document.getElementById('btn-start').disabled=true;
+    document.getElementById('btn-stop').disabled=false;
+    ws.send(JSON.stringify({
+      fault: document.getElementById('fault').value||null,
+      speed: +document.getElementById('speed').value,
+      duration: 1800, fault_start: 300
+    }));
+  };
+  ws.onmessage = (e)=>{
+    const d = JSON.parse(e.data);
+    if(d.done){ stopStream(); return; }
+    if(d.error){ console.error(d.error); return; }
+    pushPoint(d); renderL1(d.l1); renderL2(d.l2); renderL3(d.l3);
+  };
+  ws.onclose = ()=>{ stopStream(); };
+  ws.onerror = ()=>{ stopStream(); };
+}
+function stopStream(){
+  if(ws){ try{ws.close();}catch(e){} ws=null; }
+  document.getElementById('run-status').innerHTML='<span class="badge b-warn">已停止</span>';
+  document.getElementById('btn-start').disabled=false;
+  document.getElementById('btn-stop').disabled=true;
 }
 
-async function health() {
-  const r = await fetch('/api/v1/health').then(r=>r.json());
-  const d = r.data;
-  document.getElementById('sys-status').innerHTML =
-    `LLM ${d.use_llm?'<span class="badge b-ok">已连接</span>':'<span class="badge b-warn">兜底模式</span>'}` +
-    `<span class="badge b-ok">模型 ${d.fast_models.length}</span>`;
-  document.getElementById('perf').innerHTML =
-    `<div>过滤比 <span class="ok">${(d.stats.filtered_ratio*100).toFixed(0)}%</span></div>` +
-    `<div>处理窗口 ${d.stats.windows} · 预警 ${d.stats.alerted}</div>` +
-    `<div>异常检测 ${d.anomaly_detector?'<span class="ok">在线</span>':'<span class="warn">离线</span>'}</div>`;
+async function health(){
+  try{
+    const r = await fetch('/api/v1/health').then(r=>r.json());
+    const d = r.data;
+    document.getElementById('sys-status').innerHTML =
+      `LLM ${d.use_llm?'<span class="badge b-ok">已连接</span>':'<span class="badge b-warn">兜底模式</span>'}`;
+  }catch(e){ document.getElementById('sys-status').innerHTML='<span class="badge b-warn">离线</span>'; }
 }
-
-async function runSim() {
-  const fault = document.getElementById('fault').value;
-  const duration = +document.getElementById('duration').value;
-  document.getElementById('nodelog').innerHTML = '<div class="warn">⏳ 仿真运行中（含 L3 推理）...</div>';
-  const r = await fetch('/api/v1/simulate', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({duration, fault: fault||null, fault_start: Math.floor(duration/2)})
-  }).then(r=>r.json());
-  const d = r.data;
-  renderWO(d.work_order, d.push_count);
-  renderNodes(d.nodes, d.latency_ms);
-  await loadLatest();
-}
-
-async function loadLatest() {
-  const r = await fetch('/api/v1/latest').then(r=>r.json());
-  renderChart(r.data.series);
-  setMetrics(r.data.series);
-  health();
-}
-
 window.addEventListener('resize', ()=>chart.resize());
 health();
 </script>

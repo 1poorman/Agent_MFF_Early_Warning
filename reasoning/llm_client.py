@@ -27,17 +27,17 @@ def load_env_config(path: str = ".env") -> dict:
 class LLMClient:
     """大模型客户端。"""
 
-    def __init__(self, config: Optional[dict] = None, prefer: str = "big"):
+    def __init__(self, config: Optional[dict] = None, prefer: str = "big", timeout: float = 60.0):
         cfg = config or load_env_config()
         if prefer == "big" and cfg.get("url"):
             base = cfg["url"]
             base = base if base.startswith("http") else "http://" + base
-            self.client = OpenAI(base_url=base, api_key=cfg.get("key", "empty"))
+            self.client = OpenAI(base_url=base, api_key=cfg.get("key", "empty"), timeout=timeout)
             self.model = cfg.get("big_model_name", "Qwen3.6-27B-INT4")
         else:
             base = cfg.get("base_url", "")
             base = base if base.startswith("http") else "http://" + base
-            self.client = OpenAI(base_url=base, api_key=cfg.get("api_key", "empty"))
+            self.client = OpenAI(base_url=base, api_key=cfg.get("api_key", "empty"), timeout=timeout)
             self.model = cfg.get("small_model_name", "qwen3-14b-local")
 
     def chat(self, prompt: str, system: str = "", max_tokens: int = 1500,
