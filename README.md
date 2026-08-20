@@ -112,21 +112,23 @@ python -m simulator --duration 21600 \
 可选故障：`filter_clog`（过滤器堵塞）、`pump_cavitation`（水泵气蚀）、
 `pipe_leak`（管道泄漏）、`scale_buildup`（水垢缓变）。
 
-## API 概览
+## API 概览（四大智能体）
 
-| 接口 | 说明 |
-|---|---|
-| `POST /api/v1/data/ingest` | 数据接入（质量管控） |
-| `POST /api/v1/warn/l1` | L1 规则预警 |
-| `POST /api/v1/diagnose` | L3 根因诊断（LLM+防幻觉） |
-| `POST /api/v1/workorder` | 工单生成+应急+推送 |
-| `POST /api/v1/feedback` | 反馈归档 |
-| `POST /api/v1/simulate` | 仿真驱动端到端（Demo） |
-| `GET /api/v1/health` | 健康检查 |
+| 智能体 | 接口 | 说明 |
+|---|---|---|
+| ① 数据管理 | `POST /api/v1/agents/data-manager/collect` | 传感器数据采集（预留 Modbus/OPC UA/MQTT/RTSP） |
+| | `POST /api/v1/agents/data-manager/ingest` | 原始数据接收与预处理 |
+| | `GET /api/v1/agents/data-manager/schema` | L1/L2 数据格式契约 |
+| ② 预警分析 | `POST /api/v1/agents/warning-analyzer/analyze` | L1~L3 多级预警与根因诊断 |
+| ③ 故障处置 | `POST /api/v1/agents/fault-handler/handle` | 工单生成+应急联动+分级通知 |
+| ④ 持续优化 | `POST /api/v1/agents/optimizer/feedback` | 处置反馈归档 |
+| | `POST /api/v1/agents/optimizer/update-knowledge` | 知识库更新 |
+| | `GET /api/v1/agents/optimizer/status` | 优化状态查询 |
+| ★ 编排工作流 | `POST /api/v1/workflow/run` | 四大智能体一键串联演示 |
 
-**MCP 工具**：`root_cause_diagnose`、`rule_warn`、`generate_workorder`、`submit_feedback`、`health`
+**MCP 工具（9 个）**：`data_manager_*`、`warning_analyzer_analyze`、`fault_handler_handle`、`optimizer_*`、`workflow_run`
 
-完整接口规范见 `design/API_INTERFACE.md`。
+完整接口规范与 curl 使用示例见 `design/API_INTERFACE.md`。
 
 ## 文档
 

@@ -9,6 +9,7 @@
 """
 
 import asyncio
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -19,6 +20,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .service import AgentService
+from .agents import (
+    DataManagementAgent, WarningAnalysisAgent,
+    FaultHandlingAgent, ContinuousOptimizerAgent,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC = ROOT / "server" / "static"
@@ -37,6 +42,17 @@ def svc() -> AgentService:
     if _service is None:
         _service = AgentService.get()
     return _service
+
+
+def agents():
+    """四大智能体实例（懒加载，基于共享服务层）。"""
+    s = svc()
+    return {
+        "data_manager": DataManagementAgent(s),
+        "warning_analyzer": WarningAnalysisAgent(s),
+        "fault_handler": FaultHandlingAgent(s),
+        "optimizer": ContinuousOptimizerAgent(s),
+    }
 
 
 # ---------------- 请求/响应模型 ----------------
@@ -227,6 +243,197 @@ async def stream_ws(ws: WebSocket):
 @app.get("/api/v1/stream/logs")
 def stream_logs():
     return {"code": 0, "data": svc().get_stream_logs()}
+
+
+# ---------------- 四大智能体接口 ----------------
+
+class CollectRequest(BaseModel):
+    duration: int = 300            # 采集时长（秒）
+    fault: Optional[str] = None    # filter_clog/pump_cavitation/pipe_leak/scale_buildup
+    fault_start: int = 120
+    severity: float = 0.9
+
+
+class AnalyzeRequest(BaseModel):
+    records: List[Dict]            # 数据管理智能体返回的规整数据
+
+
+class HandleRequest(BaseModel):
+    analysis: Dict                  # 预警分析智能体返回结果
+
+
+class FeedbackRequest2(BaseModel):
+    order_id: str
+    actual_root_cause: str
+    is_true_fault: bool
+    handling_time_min: float
+    effect: str
+    work_order: Optional[Dict] = None
+
+
+class KnowledgeRequest(BaseModel):
+    component: str
+    action: str
+    order_id: Optional[str] = None
+    date: Optional[str] = None
+    note: str = ""
+
+
+class WorkflowRunRequest(BaseModel):
+    """编排工作流一键演示请求。"""
+    duration: int = 600            # 数据时长（秒）
+    fault: Optional[str] = "pipe_leak"
+    fault_start: int = 180
+    severity: float = 0.9
+    simulate_feedback: bool = True  # 是否模拟处置反馈（触发持续优化）
+
+
+@app.get("/api/v1/agents")
+def list_agents():
+    """四大智能体清单。"""
+    return {"code": 0, "data": [
+        {"name": "data_manager", "title": "数据管理智能体",
+         "role": "传感器数据接收/采集接口/预处理", "endpoints": [
+             "POST /api/v1/agents/data-manager/collect",
+             "POST /api/v1/agents/data-manager/ingest",
+             "GET  /api/v1/agents/data-manager/schema"]},
+        {"name": "warning_analyzer", "title": "预警分析智能体",
+         "role": "L1~L3 多级预警与根因诊断", "endpoints": [
+             "POST /api/v1/agents/warning-analyzer/analyze"]},
+        {"name": "fault_handler", "title": "故障处置智能体",
+         "role": "工单生成与预警通知", "endpoints": [
+             "POST /api/v1/agents/fault-handler/handle"]},
+        {"name": "optimizer", "title": "持续优化智能体",
+         "role": "反馈归档与知识库持续更新", "endpoints": [
+             "POST /api/v1/agents/optimizer/feedback",
+             "POST /api/v1/agents/optimizer/update-knowledge",
+             "GET  /api/v1/agents/optimizer/status"]},
+    ]}
+
+
+# ---- 1. 数据管理智能体 ----
+
+@app.post("/api/v1/agents/data-manager/collect")
+def dm_collect(req: CollectRequest):
+    """传感器数据采集（预留 Modbus/OPC UA/MQTT/RTSP 接口，当前由仿真器供数）。"""
+    return {"code": 0, "data": agents()["data_manager"].collect(
+        req.duration, req.fault, req.fault_start, req.severity)}
+
+
+@app.post("/api/v1/agents/data-manager/ingest")
+def dm_ingest(req: IngestRequest):
+    """接收原始传感器数据 -> 预处理（对齐/插补/剔除）-> L1/L2 可直接使用格式。"""
+    try:
+        return {"code": 0, "data": agents()["data_manager"].ingest(req.records)}
+    except Exception as e:
+        raise HTTPException(status_code=4001, detail=str(e))
+
+
+@app.get("/api/v1/agents/data-manager/schema")
+def dm_schema():
+    """L1/L2 可直接使用的数据格式契约。"""
+    return {"code": 0, "data": agents()["data_manager"].schema()}
+
+
+# ---- 2. 预警分析智能体 ----
+
+@app.post("/api/v1/agents/warning-analyzer/analyze")
+def wa_analyze(req: AnalyzeRequest):
+    """多级预警分析：L1 规则 -> L2 异常/趋势 -> L3 根因诊断（注入知识图谱/知识库/工况表上下文）。"""
+    try:
+        return {"code": 0, "data": agents()["warning_analyzer"].analyze(req.records)}
+    except Exception as e:
+        raise HTTPException(status_code=4001, detail=str(e))
+
+
+# ---- 3. 故障处置智能体 ----
+
+@app.post("/api/v1/agents/fault-handler/handle")
+def fh_handle(req: HandleRequest):
+    """工单生成 + 应急预案联动 + 分级预警通知。"""
+    return {"code": 0, "data": agents()["fault_handler"].handle(req.analysis)}
+
+
+# ---- 4. 持续优化智能体 ----
+
+@app.post("/api/v1/agents/optimizer/feedback")
+def co_feedback(req: FeedbackRequest2):
+    """处置反馈归档 -> 训练样本积累 -> 知识库按需更新。"""
+    return {"code": 0, "data": agents()["optimizer"].feedback(
+        req.order_id, req.actual_root_cause, req.is_true_fault,
+        req.handling_time_min, req.effect, req.work_order)}
+
+
+@app.post("/api/v1/agents/optimizer/update-knowledge")
+def co_update_knowledge(req: KnowledgeRequest):
+    """手动更新知识库（新增维修工单记录）。"""
+    return {"code": 0, "data": agents()["optimizer"].update_knowledge(
+        {"order_id": req.order_id, "date": req.date,
+         "component": req.component, "action": req.action, "note": req.note})}
+
+
+@app.get("/api/v1/agents/optimizer/status")
+def co_status():
+    """持续优化状态：反馈统计/微调触发/知识库规模。"""
+    return {"code": 0, "data": agents()["optimizer"].status()}
+
+
+# ---- 编排工作流（一键演示） ----
+
+@app.post("/api/v1/workflow/run")
+def workflow_run(req: WorkflowRunRequest):
+    """编排好的工作流：四大智能体串联一键演示。
+
+    数据管理(采集+预处理) -> 预警分析(L1/L2/L3) -> 故障处置(工单+通知)
+    -> 持续优化(模拟反馈归档)，返回全链路结果与各环节耗时。
+    """
+    ag = agents()
+    trace = []
+
+    # 节点1: 数据管理智能体
+    t0 = time.perf_counter()
+    dm = ag["data_manager"].collect(req.duration, req.fault, req.fault_start, req.severity)
+    trace.append({"agent": "data_manager", "latency_ms": round((time.perf_counter() - t0) * 1000, 1),
+                  "records": dm["quality"]["total_out"],
+                  "completeness": dm["quality"]["completeness"]})
+
+    # 节点2: 预警分析智能体
+    t0 = time.perf_counter()
+    wa = ag["warning_analyzer"].analyze(dm["records"])
+    trace.append({"agent": "warning_analyzer", "latency_ms": round((time.perf_counter() - t0) * 1000, 1),
+                  "level": wa["level"], "l1_triggered": wa["l1"]["triggered"],
+                  "anomaly_score": wa["l2"]["anomaly_score"]})
+
+    # 节点3: 故障处置智能体
+    t0 = time.perf_counter()
+    fh = ag["fault_handler"].handle(wa)
+    trace.append({"agent": "fault_handler", "latency_ms": round((time.perf_counter() - t0) * 1000, 1),
+                  "handled": fh["handled"],
+                  "order_id": fh.get("order_id"), "level": fh.get("level")})
+
+    # 节点4: 持续优化智能体（模拟处置反馈）
+    co = None
+    if req.simulate_feedback and fh.get("handled"):
+        t0 = time.perf_counter()
+        co = ag["optimizer"].feedback(
+            order_id=fh["order_id"],
+            actual_root_cause=fh["root_cause"],
+            is_true_fault=True,
+            handling_time_min=25.0,
+            effect="故障处置完成（工作流演示模拟反馈）",
+            work_order=fh)
+        trace.append({"agent": "optimizer", "latency_ms": round((time.perf_counter() - t0) * 1000, 1),
+                      "archived": co["archived"]})
+
+    return {"code": 0, "data": {
+        "workflow": "数据管理 -> 预警分析 -> 故障处置 -> 持续优化",
+        "fault_injected": req.fault,
+        "warning": wa,
+        "work_order": fh,
+        "optimization": co,
+        "trace": trace,
+        "total_latency_ms": round(sum(t["latency_ms"] for t in trace), 1),
+    }}
 
 
 # ---------------- Web 界面 ----------------
