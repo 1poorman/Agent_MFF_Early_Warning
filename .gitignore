@@ -1,0 +1,40 @@
+# ---- 参考文件（不同步至远程）----
+timesfm/
+Anomaly-Transformer/
+Anomaly_ts/
+docs/
+
+# ---- 大文件剔除 ----
+# 模型权重
+*.safetensors
+*.pth
+*.pt
+*.ckpt
+*.bin
+timesfm/weights/
+*/checkpoints/
+
+# 数据集（大体积）
+*.npy
+*.pkl
+Anomaly-Transformer/dataset/
+Anomaly-Transformer/data/
+data/
+datasets/
+
+# 嵌套仓库历史备份
+*/.git.bak/
+
+# ---- Python 常规 ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.ipynb_checkpoints/
+*.log
+
+# ---- 系统/IDE ----
+.DS_Store
+.idea/
+.vscode/
