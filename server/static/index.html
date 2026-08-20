@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>中频炉水冷系统预警智能体</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:"PingFang SC","Microsoft YaHei",sans-serif; background:#0d1421; color:#dce3ee; }
+  header { background:linear-gradient(90deg,#132038,#1a2c4e); padding:16px 28px; display:flex;
+           justify-content:space-between; align-items:center; border-bottom:1px solid #233457; }
+  header h1 { font-size:20px; font-weight:600; color:#5ec1ff; }
+  .status { font-size:13px; }
+  .badge { display:inline-block; padding:2px 10px; border-radius:10px; margin-left:8px; font-size:12px; }
+  .b-ok { background:#1c4d2e; color:#5ee08a; }
+  .b-warn { background:#5e4a16; color:#ffcf5e; }
+  .grid { display:grid; grid-template-columns:2fr 1fr; gap:16px; padding:18px 28px; }
+  .card { background:#141d2e; border:1px solid #223456; border-radius:10px; padding:16px; }
+  .card h2 { font-size:15px; color:#8fb3e8; margin-bottom:12px; font-weight:600; }
+  #chart { width:100%; height:340px; }
+  .controls { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
+  select,button { background:#1c2c4a; color:#dce3ee; border:1px solid #2e4a7a; border-radius:6px;
+                  padding:8px 14px; font-size:13px; cursor:pointer; }
+  button:hover { background:#27406b; }
+  button.primary { background:#1f6feb; border-color:#1f6feb; }
+  button.primary:hover { background:#2b7fff; }
+  .metrics { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:14px; }
+  .metric { background:#182640; border:1px solid #26406b; border-radius:8px; padding:12px; }
+  .metric .v { font-size:24px; font-weight:700; color:#5ec1ff; }
+  .metric .l { font-size:12px; color:#7f93b8; margin-top:4px; }
+  .wo { background:#101a2c; border-left:3px solid #ff5e5e; border-radius:6px; padding:12px; margin-top:10px; font-size:13px; }
+  .wo.orange { border-left-color:#ffae42; }
+  .wo.yellow { border-left-color:#ffe14d; }
+  .wo h3 { font-size:14px; margin-bottom:6px; }
+  .wo .row { margin:4px 0; color:#b9c6dd; }
+  .wo .tag { font-size:11px; padding:1px 8px; border-radius:8px; margin-right:6px; }
+  .t-red { background:#5e1c1c; color:#ff8a8a; }
+  .t-orange { background:#5e4216; color:#ffcf8a; }
+  .log { font-family:monospace; font-size:12px; max-height:200px; overflow-y:auto; background:#0a1120; padding:10px; border-radius:6px; }
+  .log div { padding:2px 0; }
+  .ok { color:#5ee08a; } .warn { color:#ffcf5e; } .err { color:#ff8a8a; }
+  .muted { color:#6b7d9e; font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>中频炉水冷系统预警智能体 · Demo</h1>
+  <div class="status">
+    <span id="sys-status">系统状态检测中...</span>
+  </div>
+</header>
+
+<div class="grid">
+  <div>
+    <div class="card">
+      <h2>实时监测与仿真驱动</h2>
+      <div class="controls">
+        <select id="fault">
+          <option value="">正常工况</option>
+          <option value="filter_clog">过滤器堵塞</option>
+          <option value="pump_cavitation">水泵气蚀</option>
+          <option value="pipe_leak">管道泄漏</option>
+          <option value="scale_buildup">线圈结垢(缓变)</option>
+        </select>
+        <select id="duration">
+          <option value="300">5 分钟</option>
+          <option value="600">10 分钟</option>
+          <option value="1800">30 分钟</option>
+        </select>
+        <button class="primary" onclick="runSim()">▶ 运行仿真</button>
+        <button onclick="loadLatest()">↻ 刷新</button>
+      </div>
+      <div class="metrics">
+        <div class="metric"><div class="v" id="m-out">--</div><div class="l">出水温度 ℃</div></div>
+        <div class="metric"><div class="v" id="m-press">--</div><div class="l">压力 kPa</div></div>
+        <div class="metric"><div class="v" id="m-flow">--</div><div class="l">流量 L/s</div></div>
+        <div class="metric"><div class="v" id="m-hum">--</div><div class="l">湿度 %RH</div></div>
+      </div>
+      <div id="chart"></div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h2>工作流节点日志</h2>
+      <div class="log" id="nodelog"><div class="muted">等待运行...</div></div>
+    </div>
+  </div>
+
+  <div>
+    <div class="card">
+      <h2>预警与工单</h2>
+      <div id="wo-area"><div class="muted">暂无预警。运行仿真（选择故障）查看端到端工单。</div></div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h2>系统性能</h2>
+      <div class="log" id="perf"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+let chart = echarts.init(document.getElementById('chart'), 'dark');
+
+function renderChart(series) {
+  if (!series) return;
+  chart.setOption({
+    backgroundColor: 'transparent',
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['出水温度','压力','流量','湿度'], textStyle:{color:'#b9c6dd'} },
+    grid: { left: 50, right: 50, top: 40, bottom: 30 },
+    xAxis: { type: 'category', data: series.timestamp.map(t=>t.slice(11)), axisLabel:{color:'#7f93b8'} },
+    yAxis: [
+      { type:'value', name:'温度/湿度', axisLabel:{color:'#7f93b8'} },
+      { type:'value', name:'压力/流量', axisLabel:{color:'#7f93b8'} }
+    ],
+    series: [
+      { name:'出水温度', type:'line', data:series.outlet_temp, smooth:true, showSymbol:false, lineStyle:{color:'#ff8a5e'}, itemStyle:{color:'#ff8a5e'} },
+      { name:'压力', type:'line', yAxisIndex:1, data:series.pressure, smooth:true, showSymbol:false, lineStyle:{color:'#5ec1ff'}, itemStyle:{color:'#5ec1ff'} },
+      { name:'流量', type:'line', yAxisIndex:1, data:series.flow_rate, smooth:true, showSymbol:false, lineStyle:{color:'#5ee08a'}, itemStyle:{color:'#5ee08a'} },
+      { name:'湿度', type:'line', data:series.cabinet_humidity, smooth:true, showSymbol:false, lineStyle:{color:'#c98aff'}, itemStyle:{color:'#c98aff'} }
+    ]
+  });
+}
+
+function setMetrics(series) {
+  if (!series) return;
+  const n = series.timestamp.length - 1;
+  document.getElementById('m-out').textContent = series.outlet_temp[n].toFixed(1);
+  document.getElementById('m-press').textContent = series.pressure[n].toFixed(1);
+  document.getElementById('m-flow').textContent = series.flow_rate[n].toFixed(1);
+  document.getElementById('m-hum').textContent = series.cabinet_humidity[n].toFixed(1);
+}
+
+function renderWO(wo, push) {
+  const area = document.getElementById('wo-area');
+  if (!wo) { area.innerHTML = '<div class="muted ok">✔ 当前窗口无异常，数据已过滤归档（未进入大模型）</div>'; return; }
+  const cls = wo.level==='red'?'':wo.level;
+  area.innerHTML = `
+    <div class="wo ${cls}">
+      <h3><span class="tag t-${wo.level}">${wo.level.toUpperCase()}</span>${wo.order_id}</h3>
+      <div class="row"><b>根因：</b>${wo.root_cause}（置信度 ${(wo.confidence*100).toFixed(0)}%）</div>
+      <div class="row"><b>特征：</b>${wo.features}</div>
+      <div class="row"><b>防幻觉：</b>物理${wo.hallucination_check.physics?'✔':'✘'} 图谱${wo.hallucination_check.kg?'✔':'✘'}</div>
+      <div class="row"><b>SOP：</b>${(wo.sop||[]).slice(0,3).join('；')}</div>
+      <div class="row"><b>备件：</b>${(wo.spare_parts||[]).join('、')||'无'}</div>
+      <div class="row muted">推送 ${push} 条（${wo.level==='red'?'声光+短信+电话':wo.level==='orange'?'APP+短信':'APP'}）</div>
+    </div>`;
+}
+
+function renderNodes(nodes, latency) {
+  const el = document.getElementById('nodelog');
+  el.innerHTML = nodes.map(n =>
+    `<div><span class="${n.status==='ok'?'ok':'warn'}">●</span> [${n.name}] ${n.status} ${n.latency_ms.toFixed(0)}ms</div>`
+  ).join('') + `<div class="muted">端到端总时延 ${latency.toFixed(0)}ms</div>`;
+}
+
+async function health() {
+  const r = await fetch('/api/v1/health').then(r=>r.json());
+  const d = r.data;
+  document.getElementById('sys-status').innerHTML =
+    `LLM ${d.use_llm?'<span class="badge b-ok">已连接</span>':'<span class="badge b-warn">兜底模式</span>'}` +
+    `<span class="badge b-ok">模型 ${d.fast_models.length}</span>`;
+  document.getElementById('perf').innerHTML =
+    `<div>过滤比 <span class="ok">${(d.stats.filtered_ratio*100).toFixed(0)}%</span></div>` +
+    `<div>处理窗口 ${d.stats.windows} · 预警 ${d.stats.alerted}</div>` +
+    `<div>异常检测 ${d.anomaly_detector?'<span class="ok">在线</span>':'<span class="warn">离线</span>'}</div>`;
+}
+
+async function runSim() {
+  const fault = document.getElementById('fault').value;
+  const duration = +document.getElementById('duration').value;
+  document.getElementById('nodelog').innerHTML = '<div class="warn">⏳ 仿真运行中（含 L3 推理）...</div>';
+  const r = await fetch('/api/v1/simulate', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({duration, fault: fault||null, fault_start: Math.floor(duration/2)})
+  }).then(r=>r.json());
+  const d = r.data;
+  renderWO(d.work_order, d.push_count);
+  renderNodes(d.nodes, d.latency_ms);
+  await loadLatest();
+}
+
+async function loadLatest() {
+  const r = await fetch('/api/v1/latest').then(r=>r.json());
+  renderChart(r.data.series);
+  setMetrics(r.data.series);
+  health();
+}
+
+window.addEventListener('resize', ()=>chart.resize());
+health();
+</script>
+</body>
+</html>
