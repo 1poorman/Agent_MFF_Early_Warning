@@ -139,10 +139,13 @@ class DataSimulator:
             out[key] = round(float(row[key] + self.rng.normal(0.0, sigma)), 1)
         for key, scale in UNIT_SCALE.items():
             out[key] = round(float(row[key] * scale + self.rng.normal(0.0, UNIT_NOISE[key])), 1)
-        p = max(out["electric_power"], 0.0)
-        if p > 0:
-            current = p * 1000.0 / (np.sqrt(3) * self.cfg.line_voltage * self.cfg.power_factor)
-            out["electric_current"] = round(current + self.rng.normal(0.0, 1.0), 1)
+        # 功率/电流物理约束：不能为负（停机工况允许为 0）
+        out["electric_power"] = max(out["electric_power"], 0.0)
+        if out["electric_power"] > 0:
+            current = out["electric_power"] * 1000.0 / (
+                np.sqrt(3) * self.cfg.line_voltage * self.cfg.power_factor
+            )
+            out["electric_current"] = round(max(current + self.rng.normal(0.0, 1.0), 0.0), 1)
         else:
             out["electric_current"] = 0.0
         return out

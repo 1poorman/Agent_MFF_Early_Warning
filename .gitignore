@@ -34,6 +34,12 @@ venv/
 .ipynb_checkpoints/
 *.log
 
+# ---- 敏感配置 ----
+.env
+
+# ---- 模型权重 ----
+models/
+
 # ---- 系统/IDE ----
 .DS_Store
 .idea/
