@@ -71,7 +71,7 @@ pkill -f "uvicorn server.api"
 
 **界面操作**（单屏四智能体布局，无需滚动）：
 1. 顶部选择故障场景（正常/过滤器堵塞/水泵气蚀/管道泄漏/线圈结垢）、回放倍速与 **L2 预测模型**（GRU 快轨 / PatchTST 精轨 / TimesFM-2.5，可随时切换）
-2. 也可点击"**上传时序数据**"直接提交 `data/simulated/*.csv` 同格式文件，自动执行全链路预警诊断（数据管理→预警分析→故障处置）并绘制曲线
+2. 也可点击"**上传时序数据**"提交 `data/simulated/*.csv` 同格式文件——上传即**选定该文件为监测数据源**（等同选定故障场景），仅绘制曲线预览；点击"开始监测"后从该数据源逐条回放，运行数据管理→预警分析→故障处置全链路
 3. 点击"开始监测"——数据 1Hz 按倍速流入：
    - **① 数据管理智能体**（左）：实时物理量曲线 + 6 指标卡片 + 质量管控状态
    - **② 预警分析智能体**（中）：L1 规则日志 / L2 异常分仪表与趋势预测（含模型名）/ L3 根因诊断卡片（含判断依据、L1/L2 上报与近期维修记录上下文）
@@ -81,7 +81,7 @@ pkill -f "uvicorn server.api"
 ```bash
 # MCP Server（可选，供 Agent 平台挂载）
 python -m server.mcp_server                                    # stdio 传输
-python -m server.mcp_server --transport streamable-http --port 8100   # HTTP 传输
+python -m server.mcp_server --transport streamable-http --port 8105   # HTTP 传输
 ```
 
 ### 2.3 一键演示（赛事评审用）
@@ -105,7 +105,7 @@ docker compose up -d --build
 # 2. 访问
 #   http://localhost:8000/       四智能体监控界面
 #   http://localhost:8000/docs   Swagger API 文档
-#   MCP Server: http://localhost:8100
+#   MCP Server: http://localhost:8105
 
 # 3. 常用命令
 docker compose logs -f api      # 查看 API 运行日志

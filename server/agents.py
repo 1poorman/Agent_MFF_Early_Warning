@@ -9,13 +9,37 @@
   数据管理 -> 预警分析 -> 故障处置 -> 持续优化
 """
 
+import math
 import time
 from dataclasses import asdict
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
+import numpy as np
 import pandas as pd
 
 from .service import AgentService
+
+
+def _json_safe(obj: Any) -> Any:
+    """递归清洗为 JSON 可序列化：NaN/Inf -> None，Timestamp/datetime -> str，numpy 标量 -> 原生。"""
+    if obj is None or isinstance(obj, (bool, str, int)):
+        return obj
+    if isinstance(obj, float):
+        return None if math.isnan(obj) or math.isinf(obj) else obj
+    if isinstance(obj, np.floating):
+        v = float(obj)
+        return None if math.isnan(v) or math.isinf(v) else v
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, (pd.Timestamp,)):
+        return str(obj)
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if hasattr(obj, "isoformat"):  # datetime/date
+        return str(obj)
+    return obj
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +77,12 @@ class DataManagementAgent:
         df = pd.DataFrame(records)
         if "timestamp" not in df.columns:
             raise ValueError("缺少 timestamp 字段")
+        # 按数据契约补全缺失列（缺列填 NaN 交质量管控插补）
+        from perception.ingest import ALL_COLUMNS
+        for c in ALL_COLUMNS:
+            if c not in df.columns:
+                df[c] = float("nan")
+        df = df[ALL_COLUMNS]
         df["timestamp"] = pd.to_datetime(df["timestamp"])
         clean, report = self.svc.qc.process(df)
         return {
@@ -121,6 +151,14 @@ class WarningAnalysisAgent:
     def analyze(self, records: List[Dict]) -> Dict:
         """执行 L1 规则 -> L2 异常/趋势 -> L3 根因诊断 的多级分析。"""
         df = pd.DataFrame(records)
+        if "timestamp" not in df.columns:
+            raise ValueError("缺少 timestamp 字段")
+        # 按数据契约补全缺失列（缺列填 NaN 交质量管控插补）
+        from perception.ingest import ALL_COLUMNS
+        for c in ALL_COLUMNS:
+            if c not in df.columns:
+                df[c] = float("nan")
+        df = df[ALL_COLUMNS]
         df["timestamp"] = pd.to_datetime(df["timestamp"])
         last = df.iloc[-1]
         cond = last.get("operating_condition")
@@ -170,7 +208,8 @@ class WarningAnalysisAgent:
             col_map = {"出水温度": "outlet_temp", "进水温度": "inlet_temp", "压力": "pressure",
                        "流量": "flow_rate", "水箱液位": "tank_level", "湿度": "cabinet_humidity",
                        "电导率": "conductivity"}
-            features = {s: float(last[c]) for s, c in col_map.items() if c in df.columns}
+            features = {s: float(last[c]) for s, c in col_map.items()
+                        if c in df.columns and not pd.isna(last[c])}
             # 窗口统计鉴别特征（气蚀/泄漏/堵塞/结垢区分的决定性依据，注入 LLM 提示）
             # 取最近 120s 尾段统计，避免故障前正常段稀释（爬升期整窗均值会失真）
             tail = df.iloc[-120:] if len(df) >= 120 else df
@@ -228,7 +267,7 @@ class WarningAnalysisAgent:
         elif l1 or l2["anomaly_triggered"]:
             level = "yellow"
 
-        return {
+        return _json_safe({
             "agent": "warning_analyzer",
             "timestamp": str(last["timestamp"]),
             "condition": condition,
@@ -241,7 +280,7 @@ class WarningAnalysisAgent:
                 "maintenance_log": "近期维修工单（知识库）",
                 "operating_schedule": "工况运行表",
             },
-        }
+        })
 
     @staticmethod
     def _detrended_std(s) -> float:
@@ -306,12 +345,13 @@ class FaultHandlingAgent:
 
         from reasoning.root_cause import DiagnosisResult
         from reasoning.anti_hallucination import CheckResult
+        hc = diagnosis.get("hallucination_check") or {}
         diag = DiagnosisResult(
             root_cause=diagnosis["root_cause"], confidence=diagnosis["confidence"],
             evidence=diagnosis.get("evidence", []), sop=diagnosis.get("sop", []),
             level=analysis.get("level", "orange"),
-            check=CheckResult(physics_ok=diagnosis["hallucination_check"]["physics"],
-                              kg_ok=diagnosis["hallucination_check"]["kg"]),
+            check=CheckResult(physics_ok=bool(hc.get("physics")),
+                              kg_ok=bool(hc.get("kg"))),
             manual_required=diagnosis.get("manual_required", False),
         )
         features_text = "；".join(diagnosis.get("evidence", [])[:2]) or \
@@ -333,7 +373,7 @@ class FaultHandlingAgent:
             "channels": sorted({r.channel for r in recs}),
             "receivers": sorted({r.receiver for r in recs}),
         }
-        return data
+        return _json_safe(data)
 
 
 # ---------------------------------------------------------------------------

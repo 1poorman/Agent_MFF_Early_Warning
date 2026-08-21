@@ -20,7 +20,7 @@ import pandas as pd
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from config import get_logger, get_settings, setup_logging
 
@@ -37,10 +37,42 @@ logger = get_logger("server.api")
 ROOT = Path(__file__).resolve().parent.parent
 STATIC = ROOT / "server" / "static"
 
+
+def _fill_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """按数据契约补全缺失列（缺列填 NaN 交质量管控插补），与文档"缺列自动补"一致。"""
+    from perception.ingest import ALL_COLUMNS
+    for c in ALL_COLUMNS:
+        if c not in df.columns:
+            df[c] = np.nan
+    return df[ALL_COLUMNS]
+
 app = FastAPI(
     title=cfg.app.title,
     version=cfg.app.version,
-    description="多级预警 + 根因诊断 + 工单闭环",
+    description="""
+中频炉水冷系统多参数融合预警智能体 —— 面向工业场景的多级预警 + 根因诊断 + 工单闭环。
+
+**能力架构（四大智能体）**：
+1. **数据管理智能体**：传感器数据接收 / 采集接口 / 预处理（缺失插补、异常剔除）
+2. **预警分析智能体**：L1 规则预警 → L2 异常检测与时序预测（GRU/PatchTST/TimesFM 可切换）→ L3 大模型根因诊断（注入知识图谱、维修工单、工况表上下文）
+3. **故障处置智能体**：自动生成工单、联动应急预案、分级预警通知（声光/短信/电话/APP）
+4. **持续优化智能体**：处置反馈归档、训练样本积累、知识库持续更新
+
+**快速体验**：
+- 界面：`/`（单屏四智能体 Web Demo，含实时流与文件上传）
+- 一键演示：`POST /api/v1/workflow/run`
+- 上传数据：`POST /api/v1/upload`（支持 data/simulated/*.csv 同格式）
+- 在线预览：https://revolt-yahoo-doing.ngrok-free.dev/docs
+""",
+    openapi_tags=[
+        {"name": "健康检查", "description": "服务状态与运行统计"},
+        {"name": "数据管理智能体", "description": "传感器采集 / 数据接入预处理 / 数据格式契约 / 文件上传 / 时序库"},
+        {"name": "预警分析智能体", "description": "L1 规则预警 / L2 异常检测与预测 / L3 根因诊断 / 最近窗口"},
+        {"name": "故障处置智能体", "description": "工单生成 + 应急预案 + 分级通知"},
+        {"name": "持续优化智能体", "description": "处置反馈归档 / 知识库更新 / 优化状态"},
+        {"name": "编排工作流", "description": "四大智能体一键串联演示 / 智能体清单"},
+        {"name": "实时流", "description": "WebSocket 实时监测与预警日志"},
+    ],
 )
 
 _service: Optional[AgentService] = None
@@ -67,34 +99,40 @@ def agents():
 # ---------------- 请求/响应模型 ----------------
 
 class IngestRequest(BaseModel):
-    records: List[Dict]
+    """数据接入请求：原始传感器记录数组。"""
+    records: List[Dict] = Field(..., description="原始传感器记录数组，字段见 GET /api/v1/agents/data-manager/schema 数据契约；timestamp 为必填列，其余缺列自动补 NaN")
 
 
 class DiagnoseRequest(BaseModel):
-    features: Dict[str, float]
-    condition: str = "unknown"
-    sensor_names: Optional[List[str]] = None
-    l1_alerts: Optional[List[Dict]] = None
-    l2_forecast: Optional[Dict] = None
+    """L3 根因诊断请求。"""
+    features: Dict[str, float] = Field(..., description="异常特征字典，键为传感器名、值为读数，如 {\"outlet_temp\": 56.2, \"pressure\": 175.0, \"flow_rate\": 6.1}")
+    condition: str = Field("unknown", description="当前工况：startup / melting / holding / tapping / idle")
+    sensor_names: Optional[List[str]] = Field(None, description="参与诊断的传感器名列表，如 [\"outlet_temp\", \"pressure\"]")
+    l1_alerts: Optional[List[Dict]] = Field(None, description="L1 规则预警记录（由 /warn/l1 返回），供诊断参考")
+    l2_forecast: Optional[Dict] = Field(None, description="L2 异常分/趋势预测结果，供诊断参考")
 
 
 class FeedbackRequest(BaseModel):
-    order_id: str
-    actual_root_cause: str
-    is_true_fault: bool
-    handling_time_min: float
-    effect: str
+    """处置反馈归档请求（持续优化）。"""
+    order_id: str = Field(..., description="工单号，如 WO-20260821-0007")
+    actual_root_cause: str = Field(..., description="实际根因，如 管道泄漏 / 过滤器堵塞")
+    is_true_fault: bool = Field(..., description="是否为真实故障（true/false）")
+    handling_time_min: float = Field(..., description="处置耗时（分钟）")
+    effect: str = Field(..., description="处置效果描述")
 
 
 class SimulateRequest(BaseModel):
-    duration: int = 300          # 回放时长（秒）
-    fault: Optional[str] = None  # filter_clog/pump_cavitation/pipe_leak/scale_buildup
-    fault_start: int = 120
+    """仿真回放请求（Demo 演示用）。"""
+    duration: int = Field(300, description="回放时长（秒），1–86400")
+    fault: Optional[str] = Field(None, description="注入故障：filter_clog（过滤器堵塞）/ pump_cavitation（水泵气蚀）/ pipe_leak（管道泄漏）/ scale_buildup（线圈结垢）")
+    fault_start: int = Field(120, description="故障起始时间（秒），相对回放起点")
 
 
 # ---------------- 接口 ----------------
 
-@app.get("/api/v1/health")
+@app.get("/api/v1/health", tags=["健康检查"],
+         summary="健康检查：服务状态与运行统计",
+         description="返回服务是否就绪、LLM 是否可用、已加载的预测模型列表与累计预警/工单/反馈统计，用于探活与部署核验。")
 def health():
     s = svc()
     return {"code": 0, "data": {
@@ -106,9 +144,11 @@ def health():
     }}
 
 
-@app.post("/api/v1/data/ingest")
+@app.post("/api/v1/data/ingest", tags=["数据管理智能体"],
+         summary="数据接入与质量管控",
+         description="接收原始传感器记录，执行质量管控（时间戳对齐 / 缺失插补 / 异常剔除），返回可用条数与质量报告。")
 def ingest(req: IngestRequest):
-    df = pd.DataFrame(req.records)
+    df = _fill_columns(pd.DataFrame(req.records))
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     clean, report = svc().qc.process(df)
     return {"code": 0, "data": {
@@ -121,23 +161,29 @@ def ingest(req: IngestRequest):
     }}
 
 
-@app.post("/api/v1/warn/l1")
+@app.post("/api/v1/warn/l1", tags=["预警分析智能体"],
+         summary="L1 规则预警（15 条规则）",
+         description="对输入记录执行 L1 规则引擎评估，返回命中的规则预警（出水温度超限 / 压差超限 / 流量异常 / 电导率超标 / 凝露风险 / 组合规则等）。")
 def warn_l1(req: IngestRequest):
-    df = pd.DataFrame(req.records)
+    df = _fill_columns(pd.DataFrame(req.records))
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     clean, _ = svc().qc.process(df)
     alerts = svc().rule_engine.evaluate(clean)
     return {"code": 0, "data": {"count": len(alerts), "alerts": alerts.to_dict("records")}}
 
 
-@app.post("/api/v1/diagnose")
+@app.post("/api/v1/diagnose", tags=["预警分析智能体"],
+         summary="L3 根因诊断（大模型 + 知识图谱）",
+         description="输入异常特征与工况，执行知识图谱召回 → LLM 多跳推理（CoT）→ 三层防幻觉校验 → 置信度门控，返回根因、置信度、证据链、处置 SOP。LLM 不可用时自动降级图谱/数值兜底。")
 def diagnose(req: DiagnoseRequest):
     diag = svc().diagnose(req.features, req.condition, req.sensor_names,
                           req.l1_alerts, req.l2_forecast)
     return {"code": 0, "data": diag.to_dict()}
 
 
-@app.post("/api/v1/workorder")
+@app.post("/api/v1/workorder", tags=["故障处置智能体"],
+         summary="工单生成（含应急预案与分级通知）",
+         description="在 L3 诊断基础上自动生成标准化运维工单，红色预警联动应急预案，并按级别完成分级预警通知（声光/短信/电话/APP）。")
 def workorder(req: DiagnoseRequest):
     s = svc()
     diag = s.diagnose(req.features, req.condition, req.sensor_names,
@@ -151,14 +197,18 @@ def workorder(req: DiagnoseRequest):
     return {"code": 0, "data": data}
 
 
-@app.post("/api/v1/feedback")
+@app.post("/api/v1/feedback", tags=["持续优化智能体"],
+         summary="处置反馈归档（持续优化）",
+         description="归档处置反馈（工单号/实际根因/处置耗时/效果），积累真实故障样本触发模型迭代，并按需更新知识库。")
 def feedback(req: FeedbackRequest):
     stats = svc().submit_feedback(req.order_id, req.actual_root_cause,
                                   req.is_true_fault, req.handling_time_min, req.effect)
     return {"code": 0, "data": stats}
 
 
-@app.post("/api/v1/simulate")
+@app.post("/api/v1/simulate", tags=["数据管理智能体"],
+         summary="仿真回放端到端（Demo 演示）",
+         description="回放物理机理仿真器数据驱动端到端流程（采集 → 预警 → 处置），返回预警级别、异常分、工单与各环节耗时，用于无传感器时的功能演示。")
 def simulate(req: SimulateRequest):
     """回放 simulator 数据驱动端到端流程（Demo 用）。"""
     from simulator import DataSimulator, FaultSpec, SimConfig
@@ -180,7 +230,9 @@ def simulate(req: SimulateRequest):
     }}
 
 
-@app.get("/api/v1/latest")
+@app.get("/api/v1/latest", tags=["预警分析智能体"],
+         summary="最近窗口结果与绘图数据",
+         description="返回最近一次窗口分析结果（预警级别/异常分/工单）与出水温度/压力/流量/湿度绘图序列，供界面展示。")
 def latest():
     """最近一次窗口结果 + 时序数据（界面展示）。"""
     s = svc()
@@ -206,7 +258,9 @@ def latest():
 
 # ---------------- 时序数据文件上传（自动预警诊断） ----------------
 
-@app.get("/api/v1/forecast-model")
+@app.get("/api/v1/forecast-model", tags=["预警分析智能体"],
+         summary="查询 L2 预测模型",
+         description="返回当前 L2 时序预测模型（gru / patchtst / timesfm）、可用模型列表与预测步长，供前端下拉框同步。")
 async def get_forecast_model():
     """获取当前 L2 预测模型与可用模型列表。"""
     s = svc()
@@ -218,14 +272,25 @@ async def get_forecast_model():
     }}
 
 
-@app.post("/api/v1/upload")
-async def upload_analyze(file: UploadFile = File(...), model: str = Form("gru")):
-    """上传时序数据文件（CSV/JSON，格式同 simulator 输出契约），
-    自动执行 数据管理 -> 预警分析 -> 故障处置 全链路并返回结果。
+@app.post("/api/v1/upload", tags=["数据管理智能体"],
+         summary="上传时序数据文件（选定监测数据源）",
+         description="""
+上传时序数据文件（CSV / JSON，格式同 data/simulated/*.csv 数据契约）。
+上传成功即**选定该文件作为监测数据源**（等同选定故障场景），仅返回解析信息与曲线预览，
+**不自动诊断**；点击"开始监测"后从该数据源逐条回放，运行 数据管理 → 预警分析 → 故障处置 全链路。
+
+**输入**：
+- `file`：CSV/JSON 文件，需含 timestamp 列，其余列按数据契约（缺列自动补 NaN 交质量管控插补）
+- `model`：L2 预测模型，可选 gru / patchtst / timesfm
+
+**输出**：文件名、条数、质量报告、绘图抽样序列。
+""")
+async def upload_analyze(file: UploadFile = File(..., description="时序数据文件（CSV/JSON，需含 timestamp 列）"),
+                         model: str = Form("gru", description="L2 预测模型：gru / patchtst / timesfm")):
+    """上传时序数据文件 -> 缓存为监测数据源（不自动诊断，点开始监测才运行四大智能体）。
 
     CSV 列契约见 perception/ingest.py ALL_COLUMNS；
     缺列自动补 NaN（质量管控插补），timestamp 为必填列。
-    model: L2 预测模型（gru/patchtst/timesfm），默认取 config 配置。
     """
     raw = await file.read()
     if not raw:
@@ -249,67 +314,53 @@ async def upload_analyze(file: UploadFile = File(...), model: str = Form("gru"))
     df = df[ALL_COLUMNS].dropna(subset=["timestamp"])
     if df.empty:
         raise HTTPException(status_code=400, detail="无有效数据行")
-    logger.info("上传文件解析完成 | %s 行=%d", file.filename, len(df))
 
     s = svc()
-    records = df.to_dict("records")
-    # L2 预测模型临时切换（model 参数），分析后恢复
-    engine = getattr(s.pipeline, "forecast_engine", None)
-    prev = None
-    if engine is not None and model in ("gru", "patchtst", "timesfm"):
-        prev = engine.name
-        if model != prev:
-            engine.switch(model, fast_models=s.pipeline.fast_models,
-                          models_dir=str(s.cfg.paths.models))
-            logger.info("上传分析切换预测模型: %s -> %s", prev, model)
-    try:
-        # ① 数据管理智能体：质量管控
-        dm = DataManagementAgent(s).ingest(records)
-        # ② 预警分析智能体：L1/L2/L3
-        wa = WarningAnalysisAgent(s).analyze(dm["records"])
-        # ③ 故障处置智能体：工单 + 通知
-        fh = FaultHandlingAgent(s).handle(wa)
-    finally:
-        if engine is not None and prev is not None and model != prev:
-            engine.switch(prev, fast_models=s.pipeline.fast_models,
-                          models_dir=str(s.cfg.paths.models))
-    logger.info("上传数据分析完成 | %s 预警级别=%s 根因=%s",
-                file.filename, wa["level"],
-                (wa["l3"] or {}).get("root_cause", "无"))
+    # 数据管理智能体：质量管控（此时仅预处理，不触发预警分析）
+    dm = DataManagementAgent(s).ingest(df.to_dict("records"))
+    # 缓存为监测数据源：点击"开始监测"后回放此数据运行四大智能体
+    s.set_uploaded_data(dm["records"], {"filename": file.filename,
+                                        "points": len(dm["records"]),
+                                        "quality": dm["quality"]})
+    logger.info("上传数据源就绪（不自动诊断）| %s 行=%d",
+                file.filename, len(dm["records"]))
 
-    # 绘图用序列（等间隔抽样，最多 2000 点）
+    # 绘图用序列（等间隔抽样，最多 2000 点）——全部 12 个数值传感器
     step = max(1, len(df) // 2000)
     sub = df.iloc[::step]
-    series = {
-        "timestamp": sub["timestamp"].astype(str).tolist(),
-        "inlet_temp": sub["inlet_temp"].round(1).tolist(),
-        "outlet_temp": sub["outlet_temp"].round(1).tolist(),
-        "pressure": sub["pressure"].round(1).tolist(),
-        "flow_rate": sub["flow_rate"].round(2).tolist(),
-        "cabinet_humidity": sub["cabinet_humidity"].round(1).tolist(),
-    }
+    series = {"timestamp": sub["timestamp"].astype(str).tolist()}
+    for c in ["inlet_temp", "outlet_temp", "pressure", "flow_rate", "flow_velocity",
+              "tank_level", "conductivity", "cabinet_temp", "cabinet_humidity",
+              "furnace_temp", "electric_power", "electric_current"]:
+        series[c] = sub[c].round(1).fillna(0).tolist()
     return {"code": 0, "data": {
         "filename": file.filename,
         "points": len(dm["records"]),
         "quality": dm["quality"],
-        "warning": wa,
-        "work_order": fh,
         "series": series,
+        "hint": "数据源已就绪，点击「开始监测」运行四大智能体",
     }}
 
 
 # ---------------- 实时流（WebSocket） ----------------
 
 class StreamRequest(BaseModel):
-    fault: Optional[str] = None
-    fault_start: int = 120
-    speed: float = 20.0          # 回放倍速（条/秒）
-    duration: int = 1800
+    """WebSocket 实时流参数（连接后发送的首条 JSON）。"""
+    fault: Optional[str] = Field(None, description="注入故障：filter_clog / pump_cavitation / pipe_leak / scale_buildup")
+    fault_start: int = Field(120, description="故障起始时间（秒），相对实时流起点")
+    speed: float = Field(20.0, description="回放倍速（条/秒），1–100")
+    duration: int = Field(1800, description="监测时长（秒）")
+    forecast_model: str = Field("gru", description="L2 预测模型：gru / patchtst / timesfm")
+    data_source: str = Field("simulator", description="数据源：simulator（物理仿真生成）/ upload（回放已上传时序数据）")
 
 
-@app.websocket("/ws/stream")
+@app.websocket("/ws/stream", name="实时流")
 async def stream_ws(ws: WebSocket):
-    """实时流：simulator 逐秒生成数据 -> 逐条处理 -> 推送指标与 L1/L2/L3 预警。"""
+    """实时流：simulator 逐秒生成数据 -> 逐条处理 -> 推送指标与 L1/L2/L3 预警。
+
+    连接后先发送参数 JSON（fault/speed/duration/fault_start/forecast_model），
+    服务端按所选模型窗口预加载（回 preload/preload_done），随后逐条推送分析结果，结束回 done。
+    """
     await ws.accept()
     s = svc()
     s.reset_stream()
@@ -321,8 +372,10 @@ async def stream_ws(ws: WebSocket):
         speed = float(req_raw.get("speed", 20.0))
         duration = int(req_raw.get("duration", 1800))
         forecast_model = str(req_raw.get("forecast_model") or "").lower()
-        logger.info("实时流参数 | fault=%s fault_start=%d speed=%.1f duration=%d forecast_model=%s",
-                    fault, fault_start, speed, duration, forecast_model)
+        data_source = str(req_raw.get("data_source") or "simulator").lower()
+        logger.info("实时流参数 | fault=%s fault_start=%d speed=%.1f duration=%d "
+                    "forecast_model=%s data_source=%s",
+                    fault, fault_start, speed, duration, forecast_model, data_source)
 
         # L2 预测模型运行时切换（GRU/PatchTST/TimesFM）
         engine = getattr(s.pipeline, "forecast_engine", None)
@@ -332,6 +385,32 @@ async def stream_ws(ws: WebSocket):
             logger.info("实时流预测模型: %s", engine.name)
         model_name = engine.name if engine else "gru"
 
+        loop = asyncio.get_event_loop()
+
+        # ---- 数据源：upload（回放已上传时序数据，运行四大智能体） ----
+        if data_source == "upload":
+            rows = s.uploaded_data or []
+            if not rows:
+                await ws.send_json({"error": "未找到已上传数据，请先上传时序数据文件"})
+                return
+            logger.info("回放上传数据源 | %s 条=%d", s.uploaded_meta.get("filename", ""), len(rows))
+            await ws.send_json({"preload": True, "points": 0, "forecast_model": model_name,
+                                "data_source": "upload",
+                                "filename": s.uploaded_meta.get("filename", "")})
+            # 从头逐条回放：曲线从第 1 条开始实时显示（不跳过预加载段）；
+            # stream_step 内部按窗口就绪才产出 L2 预测/L3 诊断，曲线始终连续
+            interval = 1.0 / max(speed, 1.0)
+            pushed = 0
+            for row in rows:
+                out = await loop.run_in_executor(None, s.stream_step, dict(row))
+                await ws.send_json(out)
+                pushed += 1
+                await asyncio.sleep(interval)
+            await ws.send_json({"done": True, "points": pushed, "data_source": "upload"})
+            logger.info("上传数据回放完成 | 分析 %d 条", pushed)
+            return
+
+        # ---- 数据源：simulator（物理仿真生成） ----
         from simulator import DataSimulator, FaultSpec, SimConfig
         # 预加载量 = 当前预测后端窗口（GRU 16800s=4.6h / PatchTST 7200s / TimesFM 1024s）
         warmup_s = engine.backend_window() if engine is not None else 16800
@@ -339,7 +418,6 @@ async def stream_ws(ws: WebSocket):
             if fault else []
         sim = DataSimulator(config=SimConfig(seed=42), faults=faults)
 
-        loop = asyncio.get_event_loop()
         # ---- 预加载阶段：填充缓冲不推送，界面提示 ----
         await ws.send_json({"preload": True, "points": warmup_s, "forecast_model": model_name})
         for _ in range(warmup_s):
@@ -373,12 +451,16 @@ async def stream_ws(ws: WebSocket):
             pass
 
 
-@app.get("/api/v1/stream/logs")
+@app.get("/api/v1/stream/logs", tags=["实时流"],
+         summary="实时流预警日志",
+         description="返回最近一次实时流的 L1/L2/L3 预警日志记录（含时间、规则、消息），供界面展示。")
 def stream_logs():
     return {"code": 0, "data": svc().get_stream_logs()}
 
 
-@app.post("/api/v1/stream/reset")
+@app.post("/api/v1/stream/reset", tags=["实时流"],
+         summary="重置实时流缓冲",
+         description="清空实时流缓冲与预警日志，开始新一轮监测（新一轮 WebSocket 连接时自动执行）。")
 def stream_reset():
     """重置实时流缓冲与日志（新一次监测）。"""
     svc().reset_stream()
@@ -386,14 +468,17 @@ def stream_reset():
 
 
 class TsQueryRequest(BaseModel):
-    start: str                        # "2026-08-21 00:00:00"
-    end: str
-    condition: Optional[str] = None
-    fault: Optional[str] = None
-    columns: Optional[List[str]] = None
+    """时序数据库历史查询请求。"""
+    start: str = Field(..., description="起始时间，格式 2026-08-21 00:00:00")
+    end: str = Field(..., description="结束时间，格式 2026-08-21 06:00:00")
+    condition: Optional[str] = Field(None, description="按工况过滤：startup/melting/holding/tapping/idle")
+    fault: Optional[str] = Field(None, description="按故障过滤：filter_clog/pump_cavitation/pipe_leak/scale_buildup")
+    columns: Optional[List[str]] = Field(None, description="返回列，如 [\"outlet_temp\", \"pressure\"]；缺省返回全部")
 
 
-@app.get("/api/v1/tsdb/stats")
+@app.get("/api/v1/tsdb/stats", tags=["数据管理智能体"],
+         summary="时序库存储统计",
+         description="返回 PostgreSQL 时序库月度分区数、各分区记录数；数据库未连接时返回 enabled=false 与原因。")
 def tsdb_stats():
     """时序数据库存储统计（分区/记录数）。"""
     s = svc()
@@ -405,12 +490,14 @@ def tsdb_stats():
         return {"code": 0, "data": {"enabled": False, "reason": str(e)}}
 
 
-@app.post("/api/v1/tsdb/query")
+@app.post("/api/v1/tsdb/query", tags=["数据管理智能体"],
+         summary="时序库历史查询",
+         description="按时间区间（可选工况/故障过滤）从 PostgreSQL 时序库读取历史数据，返回记录数组。")
 def tsdb_query(req: TsQueryRequest):
     """从时序数据库读取历史数据（区间/工况/故障过滤）。"""
     s = svc()
     if not getattr(s, "tsdb_ok", False):
-        raise HTTPException(status_code=5001, detail="时序数据库未连接")
+        raise HTTPException(status_code=503, detail="时序数据库未连接")
     from datetime import datetime
     df = s.tsdb.query(
         start=datetime.fromisoformat(req.start),
@@ -425,47 +512,54 @@ def tsdb_query(req: TsQueryRequest):
 # ---------------- 四大智能体接口 ----------------
 
 class CollectRequest(BaseModel):
-    duration: int = 300            # 采集时长（秒）
-    fault: Optional[str] = None    # filter_clog/pump_cavitation/pipe_leak/scale_buildup
-    fault_start: int = 120
-    severity: float = 0.9
+    """传感器数据采集请求（数据管理智能体）。"""
+    duration: int = Field(300, description="采集时长（秒），1–86400")
+    fault: Optional[str] = Field(None, description="注入故障：filter_clog / pump_cavitation / pipe_leak / scale_buildup")
+    fault_start: int = Field(120, description="故障起始时间（秒）")
+    severity: float = Field(0.9, description="故障严重度 0–1（1 为最严重）")
 
 
 class AnalyzeRequest(BaseModel):
-    records: List[Dict]            # 数据管理智能体返回的规整数据
+    """多级预警分析请求（预警分析智能体）。"""
+    records: List[Dict] = Field(..., description="数据管理智能体返回的规整数据（见数据契约）")
 
 
 class HandleRequest(BaseModel):
-    analysis: Dict                  # 预警分析智能体返回结果
+    """故障处置请求（故障处置智能体）。"""
+    analysis: Dict = Field(..., description="预警分析智能体返回结果（含 level、l3 根因等）")
 
 
 class FeedbackRequest2(BaseModel):
-    order_id: str
-    actual_root_cause: str
-    is_true_fault: bool
-    handling_time_min: float
-    effect: str
-    work_order: Optional[Dict] = None
+    """处置反馈归档请求（持续优化智能体）。"""
+    order_id: str = Field(..., description="工单号，如 WO-20260821-0007")
+    actual_root_cause: str = Field(..., description="实际根因")
+    is_true_fault: bool = Field(..., description="是否为真实故障")
+    handling_time_min: float = Field(..., description="处置耗时（分钟）")
+    effect: str = Field(..., description="处置效果")
+    work_order: Optional[Dict] = Field(None, description="工单详情（可选）")
 
 
 class KnowledgeRequest(BaseModel):
-    component: str
-    action: str
-    order_id: Optional[str] = None
-    date: Optional[str] = None
-    note: str = ""
+    """知识库更新请求（持续优化智能体）。"""
+    component: str = Field(..., description="部件，如 管道 / 过滤器 / 水泵 / 线圈")
+    action: str = Field(..., description="处置动作，如 更换3号阀后密封圈")
+    order_id: Optional[str] = Field(None, description="关联工单号（可选）")
+    date: Optional[str] = Field(None, description="日期，格式 2026-08-21")
+    note: str = Field("", description="备注")
 
 
 class WorkflowRunRequest(BaseModel):
     """编排工作流一键演示请求。"""
-    duration: int = 600            # 数据时长（秒）
-    fault: Optional[str] = "pipe_leak"
-    fault_start: int = 180
-    severity: float = 0.9
-    simulate_feedback: bool = True  # 是否模拟处置反馈（触发持续优化）
+    duration: int = Field(600, description="数据时长（秒）")
+    fault: Optional[str] = Field("pipe_leak", description="注入故障：filter_clog / pump_cavitation / pipe_leak / scale_buildup")
+    fault_start: int = Field(180, description="故障起始时间（秒）")
+    severity: float = Field(0.9, description="故障严重度 0–1")
+    simulate_feedback: bool = Field(True, description="是否模拟处置反馈（触发持续优化）")
 
 
-@app.get("/api/v1/agents")
+@app.get("/api/v1/agents", tags=["编排工作流"],
+         summary="四大智能体清单",
+         description="返回数据管理 / 预警分析 / 故障处置 / 持续优化四个智能体的名称、职责与关联端点。")
 def list_agents():
     """四大智能体清单。"""
     return {"code": 0, "data": [
@@ -490,23 +584,29 @@ def list_agents():
 
 # ---- 1. 数据管理智能体 ----
 
-@app.post("/api/v1/agents/data-manager/collect")
+@app.post("/api/v1/agents/data-manager/collect", tags=["数据管理智能体"],
+         summary="传感器数据采集",
+         description="传感器数据采集接口（预留 Modbus/OPC UA/MQTT/RTSP 真实协议接入，当前由物理机理仿真器供数，支持注入 4 类故障），返回规整后的采集数据。")
 def dm_collect(req: CollectRequest):
     """传感器数据采集（预留 Modbus/OPC UA/MQTT/RTSP 接口，当前由仿真器供数）。"""
     return {"code": 0, "data": agents()["data_manager"].collect(
         req.duration, req.fault, req.fault_start, req.severity)}
 
 
-@app.post("/api/v1/agents/data-manager/ingest")
+@app.post("/api/v1/agents/data-manager/ingest", tags=["数据管理智能体"],
+         summary="数据接入预处理",
+         description="接收原始传感器记录并预处理（时间戳对齐 / 缺失插补 / 异常剔除），返回 L1/L2 可直接使用的数据格式与质量报告。")
 def dm_ingest(req: IngestRequest):
     """接收原始传感器数据 -> 预处理（对齐/插补/剔除）-> L1/L2 可直接使用格式。"""
     try:
         return {"code": 0, "data": agents()["data_manager"].ingest(req.records)}
     except Exception as e:
-        raise HTTPException(status_code=4001, detail=str(e))
+        raise HTTPException(status_code=400, detail=f"数据接入处理异常: {e}")
 
 
-@app.get("/api/v1/agents/data-manager/schema")
+@app.get("/api/v1/agents/data-manager/schema", tags=["数据管理智能体"],
+         summary="数据格式契约",
+         description="查询 L1/L2 可直接使用的数据格式契约（字段 / 单位 / 精度），供上传文件与第三方数据接入参考。")
 def dm_schema():
     """L1/L2 可直接使用的数据格式契约。"""
     return {"code": 0, "data": agents()["data_manager"].schema()}
@@ -514,18 +614,22 @@ def dm_schema():
 
 # ---- 2. 预警分析智能体 ----
 
-@app.post("/api/v1/agents/warning-analyzer/analyze")
+@app.post("/api/v1/agents/warning-analyzer/analyze", tags=["预警分析智能体"],
+         summary="多级预警分析（L1/L2/L3）",
+         description="多级预警分析：L1 规则 → L2 异常检测与趋势预测（GRU/PatchTST/TimesFM）→ L3 大模型根因诊断，自动注入知识图谱 / 维修工单 / 工况表上下文，返回预警级别、异常分、根因与上下文。")
 def wa_analyze(req: AnalyzeRequest):
     """多级预警分析：L1 规则 -> L2 异常/趋势 -> L3 根因诊断（注入知识图谱/知识库/工况表上下文）。"""
     try:
         return {"code": 0, "data": agents()["warning_analyzer"].analyze(req.records)}
     except Exception as e:
-        raise HTTPException(status_code=4001, detail=str(e))
+        raise HTTPException(status_code=400, detail=f"预警分析异常: {e}")
 
 
 # ---- 3. 故障处置智能体 ----
 
-@app.post("/api/v1/agents/fault-handler/handle")
+@app.post("/api/v1/agents/fault-handler/handle", tags=["故障处置智能体"],
+         summary="故障处置（工单 + 应急 + 通知）",
+         description="接收预警分析结果，生成标准化运维工单（含 SOP / 备件）、红色预警联动应急预案，并完成分级预警通知（声光/短信/电话/APP）。")
 def fh_handle(req: HandleRequest):
     """工单生成 + 应急预案联动 + 分级预警通知。"""
     return {"code": 0, "data": agents()["fault_handler"].handle(req.analysis)}
@@ -533,7 +637,9 @@ def fh_handle(req: HandleRequest):
 
 # ---- 4. 持续优化智能体 ----
 
-@app.post("/api/v1/agents/optimizer/feedback")
+@app.post("/api/v1/agents/optimizer/feedback", tags=["持续优化智能体"],
+         summary="处置反馈归档",
+         description="归档处置反馈（工单号 / 实际根因 / 处置耗时 / 效果），积累真实故障样本触发模型迭代，并按需更新知识库。")
 def co_feedback(req: FeedbackRequest2):
     """处置反馈归档 -> 训练样本积累 -> 知识库按需更新。"""
     return {"code": 0, "data": agents()["optimizer"].feedback(
@@ -541,7 +647,9 @@ def co_feedback(req: FeedbackRequest2):
         req.handling_time_min, req.effect, req.work_order)}
 
 
-@app.post("/api/v1/agents/optimizer/update-knowledge")
+@app.post("/api/v1/agents/optimizer/update-knowledge", tags=["持续优化智能体"],
+         summary="更新知识库",
+         description="手动更新知识库（新增维修工单记录），新记录将作为后续 L3 诊断的上下文参与推理。")
 def co_update_knowledge(req: KnowledgeRequest):
     """手动更新知识库（新增维修工单记录）。"""
     return {"code": 0, "data": agents()["optimizer"].update_knowledge(
@@ -549,7 +657,9 @@ def co_update_knowledge(req: KnowledgeRequest):
          "component": req.component, "action": req.action, "note": req.note})}
 
 
-@app.get("/api/v1/agents/optimizer/status")
+@app.get("/api/v1/agents/optimizer/status", tags=["持续优化智能体"],
+         summary="持续优化状态",
+         description="查询持续优化状态：反馈统计（总数/真实故障/误报）、模型微调触发情况与知识库规模。")
 def co_status():
     """持续优化状态：反馈统计/微调触发/知识库规模。"""
     return {"code": 0, "data": agents()["optimizer"].status()}
@@ -557,7 +667,9 @@ def co_status():
 
 # ---- 编排工作流（一键演示） ----
 
-@app.post("/api/v1/workflow/run")
+@app.post("/api/v1/workflow/run", tags=["编排工作流"],
+         summary="编排工作流一键演示",
+         description="四大智能体一键串联：数据采集 → 预警分析 → 故障处置 → 持续优化，返回全链路结果与各环节耗时（端到端约 5s，其中 LLM 推理 3~5s）。")
 def workflow_run(req: WorkflowRunRequest):
     """编排好的工作流：四大智能体串联一键演示。
 

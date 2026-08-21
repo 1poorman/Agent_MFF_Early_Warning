@@ -29,6 +29,8 @@
   .file-btn { background:#1c2c4a; border:1px dashed #2e4a7a; border-radius:5px; padding:4px 10px;
               font-size:12px; color:#8fb3e8; cursor:pointer; white-space:nowrap; }
   .file-btn:hover { background:#27406b; }
+  .file-btn.disabled { opacity:.4; cursor:not-allowed; color:#6b7d9e; border-color:#223456; }
+  .file-btn.disabled:hover { background:#1c2c4a; }
   .hint { font-size:10px; color:#6b7d9e; margin-left:auto; white-space:nowrap; }
 
   .layout { flex:1 1 auto; min-height:0; display:grid; gap:9px; padding:9px 18px 12px;
@@ -47,8 +49,9 @@
   .metric { background:#182640; border:1px solid #26406b; border-radius:7px; padding:5px 3px; text-align:center; }
   .metric .v { font-size:16px; font-weight:700; color:#5ec1ff; }
   .metric .l { font-size:9.5px; color:#7f93b8; margin-top:2px; }
-  #chart { flex:1 1 auto; min-height:0; }
-  .qline { flex:0 0 auto; font-size:10.5px; color:#6b7d9e; margin-top:5px; }
+  #chart { flex:1 1 auto; min-height:170px; max-height:300px; padding-bottom:2px; }  /* 曲线窗口：底部为 X 轴刻度留白 */
+  .qline { flex:0 0 auto; font-size:10.5px; color:#6b7d9e; margin-top:16px; padding-top:8px;
+           border-top:1px dashed #223456; }  /* 分隔线 + 足够间距，彻底避开 X 轴刻度 */
   .qline b { color:#5ee08a; font-weight:600; }
 
   .wa-card { grid-column:2; }
@@ -116,14 +119,15 @@
 
 <div class="controls">
   <label>故障场景</label>
-  <select id="fault">
+  <select id="fault" onchange="onFaultChange(this.value)">
     <option value="">正常工况</option>
     <option value="filter_clog">过滤器堵塞</option>
     <option value="pump_cavitation">水泵气蚀</option>
     <option value="pipe_leak">管道泄漏</option>
     <option value="scale_buildup">线圈结垢(缓变)</option>
+    <option value="custom">自定义上传</option>
   </select>
-  <label class="file-btn" title="支持 data/simulated/*.csv 同格式时序数据，自动全链路预警诊断">
+  <label class="file-btn" id="upload-btn" title="支持 data/simulated/*.csv 同格式时序数据；选择「自定义上传」后可用，上传即选定为监测数据源">
     上传时序数据<input type="file" id="file-input" accept=".csv,.json,.jsonl" hidden onchange="uploadFile(this)">
   </label>
   <label>倍速</label>
@@ -139,6 +143,11 @@
     <option value="gru">GRU 快轨</option>
     <option value="patchtst">PatchTST 精轨</option>
     <option value="timesfm">TimesFM-2.5</option>
+  </select>
+  <label>监测模式</label>
+  <select id="smode" onchange="setSensorMode(this.value)">
+    <option value="normal">常规监测（6 项）</option>
+    <option value="full">完整监测（12 项）</option>
   </select>
   <label>压/流量轴</label>
   <select id="yscale" onchange="setYScale(this.value)">
@@ -221,37 +230,70 @@
 <script>
 const chart = echarts.init(document.getElementById('chart'), 'dark');
 const MAXP = 150;
-let buf = { inlet:[], out:[], press:[], flow:[], hum:[], ts:[] };
+// 12 个数值传感器（13 采集字段中 operating_condition 为工况标签非数值）
+const SENSORS_FULL = [
+  ['inlet_temp','进水温度'], ['outlet_temp','出水温度'], ['pressure','压力'],
+  ['flow_rate','流量'], ['flow_velocity','流速'], ['tank_level','液位'],
+  ['conductivity','电导率'], ['cabinet_temp','柜温'], ['cabinet_humidity','湿度'],
+  ['furnace_temp','炉温'], ['electric_power','电功率'], ['electric_current','电流'],
+];
+// 常规监测（原 6 项）：进水/出水/压力/流量/湿度 + 预测虚线
+const SENSORS_NORMAL = [
+  ['inlet_temp','进水温度'], ['outlet_temp','出水温度'], ['pressure','压力'],
+  ['flow_rate','流量'], ['cabinet_humidity','湿度'],
+];
+const SENSOR_COLORS = ['#6aa8ff','#ff8a5e','#5ec1ff','#5ee08a','#ffd166','#4ecdc4',
+                       '#c98aff','#ff6b9d','#b8e986','#ff9f43','#63d2ff','#f78fb3'];
+let SENSORS = [...SENSORS_NORMAL];   // 当前显示的传感器（常规监测默认）
+let buf = { ts: [] };
+SENSORS.forEach((s,i)=>{ buf[s[0]] = []; });
 let ws = null, l1n=0, l2n=0, l3n=0, won=0, pollTimer=null, ptTotal=0;
-let lastForecast = null;   // 最近一次 GRU 预测序列
+let lastForecast = null;   // 最近一次预测序列
+
+// 右轴传感器（压/流/电/炉温类，量纲各异用对数轴）
+const RIGHT_AXIS_KEYS = new Set(['pressure','flow_rate','flow_velocity','conductivity',
+                                 'furnace_temp','electric_power','electric_current']);
+// 按当前 SENSORS 生成 series（含预测虚线）
+function buildSeries(dataMap, fcData){
+  const arr = SENSORS.map((s, i)=>{
+    const key = s[0];
+    const idx = SENSORS_FULL.findIndex(x=>x[0]===key);
+    return {
+      name: s[1], type:'line', yAxisIndex: RIGHT_AXIS_KEYS.has(key)?1:0,
+      data: dataMap[key] || [], smooth:true, showSymbol:false,
+      lineStyle:{color:SENSOR_COLORS[idx]}, itemStyle:{color:SENSOR_COLORS[idx]}
+    };
+  });
+  arr.push({name:'预测', type:'line', data: fcData||[], smooth:true, showSymbol:false,
+            lineStyle:{color:'#ff8a5e', type:'dashed', width:1.5}, itemStyle:{color:'#ff8a5e'}});
+  return arr;
+}
+function getLegendData(){ return SENSORS.map(s=>s[1]).concat(['预测']); }
 
 chart.setOption({
   backgroundColor:'transparent',
   tooltip:{trigger:'axis'},
-  legend:{data:['进水温度','出水温度','压力','流量','湿度','出水温度预测'], textStyle:{color:'#b9c6dd',fontSize:10}},
-  grid:{left:42,right:46,top:28,bottom:20},
+  // 图例移到顶部：Y 轴名垂直居中不冲突，底部 X 轴刻度区干净
+  legend:{data: getLegendData(),
+          top:0, itemWidth:12, itemHeight:8, type:'scroll',
+          textStyle:{color:'#b9c6dd',fontSize:9}},
+  grid:{left:62,right:56,top:30,bottom:30},  /* bottom 加大：X 轴刻度在 canvas 内留足空间 */
   xAxis:{type:'category', data:[], axisLabel:{color:'#7f93b8',fontSize:10}},
   yAxis:[
-    {type:'value', name:'温/湿', axisLabel:{color:'#7f93b8',fontSize:10}, splitLine:{lineStyle:{color:'#1d2f52'}}},
-    {type:'log', name:'压/流', axisLabel:{color:'#7f93b8',fontSize:10}, splitLine:{show:false},
+    {type:'value', name:'温/湿\n(℃/%RH)', nameLocation:'middle', nameGap:24,
+     axisLabel:{color:'#7f93b8',fontSize:10}, splitLine:{lineStyle:{color:'#1d2f52'}}},
+    {type:'log', name:'压/流/电\n(量纲各异)', nameLocation:'middle', nameGap:24,
+     axisLabel:{color:'#7f93b8',fontSize:10}, splitLine:{show:false},
      logBase: 10, min: 1}
   ],
-  series:[
-    {name:'进水温度', type:'line', data:[], smooth:true, showSymbol:false, lineStyle:{color:'#6aa8ff'}, itemStyle:{color:'#6aa8ff'}},
-    {name:'出水温度', type:'line', data:[], smooth:true, showSymbol:false, lineStyle:{color:'#ff8a5e'}, itemStyle:{color:'#ff8a5e'}},
-    {name:'压力', type:'line', yAxisIndex:1, data:[], smooth:true, showSymbol:false, lineStyle:{color:'#5ec1ff'}, itemStyle:{color:'#5ec1ff'}},
-    {name:'流量', type:'line', yAxisIndex:1, data:[], smooth:true, showSymbol:false, lineStyle:{color:'#5ee08a'}, itemStyle:{color:'#5ee08a'}},
-    {name:'湿度', type:'line', data:[], smooth:true, showSymbol:false, lineStyle:{color:'#c98aff'}, itemStyle:{color:'#c98aff'}},
-    {name:'出水温度预测', type:'line', data:[], smooth:true, showSymbol:false,
-     lineStyle:{color:'#ff8a5e', type:'dashed', width:1.5}, itemStyle:{color:'#ff8a5e'}}
-  ]
+  series: buildSeries({})
 });
 
 function pushPoint(d){
   const m = d.metrics, t = (d.timestamp||'').slice(11);
   ptTotal++;
-  buf.ts.push(t); buf.inlet.push(m.inlet_temp); buf.out.push(m.outlet_temp);
-  buf.press.push(m.pressure); buf.flow.push(m.flow_rate); buf.hum.push(m.cabinet_humidity);
+  buf.ts.push(t);
+  SENSORS.forEach(s=>{ buf[s[0]].push(m[s[0]]!==undefined ? m[s[0]] : null); });
   if (buf.ts.length > MAXP){ for(const k in buf) buf[k].shift(); }
   // 预测曲线：x 轴追加未来 10min 标签，虚线预测段（前段 null 对齐实际数据）
   const fc = lastForecast || [];
@@ -269,10 +311,7 @@ function pushPoint(d){
   }
   chart.setOption({
     xAxis:{data: xAll},
-    series:[
-      {data:buf.inlet},{data:buf.out},{data:buf.press},{data:buf.flow},{data:buf.hum},
-      {data: fcData}
-    ]
+    series: buildSeries(buf, fcData)
   });
   setText('m-inlet', m.inlet_temp); setText('m-out', m.outlet_temp);
   setText('m-press', m.pressure); setText('m-flow', m.flow_rate);
@@ -286,7 +325,11 @@ function setText(id, v){ if(v!==undefined && v!==null) document.getElementById(i
 function setYScale(mode){
   const isLog = mode === 'log';
   chart.setOption({
-    yAxis:[{}, { type: isLog?'log':'value', logBase:10, min: isLog?1:undefined }]
+    yAxis:[
+      { nameLocation:'middle', nameGap:24 },
+      { type: isLog?'log':'value', nameLocation:'middle', nameGap:24,
+        logBase:10, min: isLog?1:undefined }
+    ]
   });
 }
 
@@ -489,7 +532,8 @@ async function pollLogs(){
 }
 
 async function resetStream(){
-  await fetch('/api/v1/stream/reset', {method:'POST'});
+  try{ await fetch('/api/v1/stream/reset', {method:'POST'}); }
+  catch(e){ console.warn('reset stream 请求失败(忽略):', e); }   // 失败不阻塞 UI
   lastLogLen = {l3:0, wo:0, co:0};
   l1n=l2n=l3n=won=ptTotal=0;
   lastForecast = null;
@@ -512,22 +556,64 @@ async function resetStream(){
   const di = document.getElementById('dew-ind');
   if(di){ di.textContent='凝露监测中...'; di.style.color='#5ec1ff'; delete di.dataset.fired; }
   document.getElementById('pt-count2').textContent='0';
+  // 清空曲线（当前传感器 + 预测）
+  chart.setOption({xAxis:{data:[]}, series: buildSeries(buf, [])});
 }
 
-function startStream(){
-  buf = { inlet:[], out:[], press:[], flow:[], hum:[], ts:[] };
-  resetStream().then(()=>{
+// 监测模式切换：常规监测（原 6 项）/ 完整监测（12 项）
+function setSensorMode(mode){
+  const m = mode === 'full' ? SENSORS_FULL : SENSORS_NORMAL;
+  // 已切换则跳过
+  if (JSON.stringify(SENSORS.map(s=>s[0])) === JSON.stringify(m.map(s=>s[0]))) return;
+  SENSORS = m.map(s=>[...s]);
+  // 重建 buf（保留已缓存数据，补齐新键）
+  const nb = { ts: buf.ts.slice() };
+  SENSORS.forEach(s=>{ nb[s[0]] = buf[s[0]] ? buf[s[0]].slice() : []; });
+  buf = nb;
+  // 预测序列长度需与当前 ts 对齐（常规/完整都追加预测，保持 13→6+1 或 12+1 条）
+  const fc = lastForecast || [];
+  let xAll = buf.ts.slice(), fcData = [];
+  if (fc.length){
+    const lastT = buf.ts[buf.ts.length-1];
+    if (lastT){
+      const secOfDay = (+lastT.slice(0,2))*3600 + (+lastT.slice(3,5))*60 + (+lastT.slice(6,8));
+      fc.forEach((v,i)=>{
+        const fut = secOfDay + Math.round((i+1)*30);
+        const hh = String(Math.floor((fut%86400)/3600)).padStart(2,'0');
+        const mm = String(Math.floor((fut%3600)/60)).padStart(2,'0');
+        xAll.push(hh+':'+mm);
+      });
+      fcData = new Array(buf.ts.length).fill(null).concat(fc);
+    }
+  }
+  chart.setOption({
+    legend:{data: getLegendData()},
+    xAxis:{data: xAll},
+    series: buildSeries(buf, fcData)
+  });
+  document.getElementById('pt-count').textContent = buf.ts.length + ' 点';
+}
+
+async function startStream(){
+  buf = { ts: [] };
+  SENSORS.forEach(s=>{ buf[s[0]] = []; });
+  try{ await resetStream(); }catch(e){ console.warn('reset 失败(忽略):', e); }
+  try{
     const proto = location.protocol==='https:'?'wss':'ws';
     ws = new WebSocket(`${proto}://${location.host}/ws/stream`);
     ws.onopen = ()=>{
       document.getElementById('run-status').innerHTML='<span class="badge b-run">监测中</span>';
       document.getElementById('btn-start').disabled=true;
       document.getElementById('btn-stop').disabled=false;
+      // 有上传数据源则回放该数据（数据源即故障场景）；否则用物理仿真 + 故障注入
+      const useUpload = uploadedData !== null;
       ws.send(JSON.stringify({
-        fault: document.getElementById('fault').value||null,
+        fault: useUpload ? null : (document.getElementById('fault').value||null),
         speed: +document.getElementById('speed').value,
-        duration: 1800, fault_start: 300,
-        forecast_model: document.getElementById('fmodel').value
+        duration: useUpload ? (uploadedData.points||1800) : 1800,
+        fault_start: 300,
+        forecast_model: document.getElementById('fmodel').value,
+        data_source: useUpload ? 'upload' : 'simulator'
       }));
     };
     ws.onmessage = (e)=>{
@@ -540,7 +626,8 @@ function startStream(){
         return;
       }
       if(d.preload_done){                  // 预加载完成，启动实时分析
-        document.getElementById('forecast-msg').innerHTML = `预加载完成 ${d.points} 点，开始实时分析（${d.forecast_model||'GRU'} 就绪）`;
+        document.getElementById('forecast-msg').innerHTML =
+          `预加载完成 ${d.points} 点，开始实时分析（${d.forecast_model||'GRU'} 就绪）`;
         document.getElementById('forecast-msg').style.color='#5ee08a';
         return;
       }
@@ -551,7 +638,12 @@ function startStream(){
     };
     ws.onclose = ()=>{ stopStream(); };
     ws.onerror = ()=>{ stopStream(); };
-  });
+  }catch(e){
+    console.error('启动 WebSocket 失败:', e);
+    document.getElementById('run-status').innerHTML='<span class="badge b-warn">连接失败</span>';
+    document.getElementById('btn-start').disabled=false;
+    document.getElementById('btn-stop').disabled=true;
+  }
   pollTimer = setInterval(pollLogs, 3000);
 }
 function stopStream(){
@@ -577,63 +669,84 @@ function getForecastModel(){
   return document.getElementById('fmodel').value || 'gru';
 }
 
-// ---- 上传时序数据文件：自动全链路预警诊断 ----
+// ---- 故障场景切换：仅"自定义上传"启用上传按钮 ----
+function onFaultChange(val){
+  const btn = document.getElementById('upload-btn');
+  const isCustom = val === 'custom';
+  if(btn) btn.classList.toggle('disabled', !isCustom);
+  // 切回预设场景时清除上传数据源，避免与预设场景冲突
+  if(!isCustom && uploadedData){
+    uploadedData = null;
+    console.log('已清除上传数据源（切回预设场景）');
+  }
+}
+
+// ---- 上传时序数据文件：选定监测数据源（点击开始监测才运行四大智能体） ----
+let uploadedData = null;   // 已上传的数据源（{filename, points, series}），null=仿真数据源
 async function uploadFile(input){
   const f = input && input.files && input.files[0];
   if(!f) return;
+  // 仅"自定义上传"场景允许上传，避免与预设故障场景冲突
+  if(document.getElementById('fault').value !== 'custom'){
+    alert('请先在「故障场景」中选择「自定义上传」，再上传时序数据文件');
+    input.value = '';
+    return;
+  }
   stopStream();                       // 停止实时流（若有）
   const fd = new FormData();
   fd.append('file', f);
   fd.append('model', getForecastModel());
-  document.getElementById('run-status').innerHTML='<span class="badge b-run">解析分析中...</span>';
+  document.getElementById('run-status').innerHTML='<span class="badge b-run">解析文件中...</span>';
   let r;
   try{
-    r = await fetch('/api/v1/upload', {method:'POST', body:fd}).then(res=>res.json());
+    const ctrl = new AbortController();
+    const timer = setTimeout(()=>ctrl.abort(), 30000);   // 30s 超时，避免无限挂起
+    r = await fetch('/api/v1/upload', {method:'POST', body:fd, signal:ctrl.signal})
+           .then(res=>res.json());
+    clearTimeout(timer);
   }catch(e){
-    r = {code:1, detail:'网络错误：'+e};
+    r = {code:1, detail:'网络错误或超时：'+e};
   }
   if(r.code!==0){
     alert('上传失败：' + (r.detail||r.message||'未知错误'));
     document.getElementById('run-status').innerHTML='<span class="badge b-warn">上传失败</span>';
     return;
   }
-  resetStream();
+  try{ await resetStream(); }catch(e){ console.warn('reset 失败(忽略):', e); }
   const d = r.data;
-  document.getElementById('run-status').innerHTML='<span class="badge b-ok">文件分析完成</span>';
-  document.getElementById('wa-level').textContent = '级别 ' + (d.warning.level||'none').toUpperCase();
+  uploadedData = d;   // 保存为监测数据源（等同选定故障场景）
+  document.getElementById('run-status').innerHTML='<span class="badge b-ok">数据源已就绪</span>';
+  // 数据源预览：仅绘制曲线，不自动诊断（点"开始监测"才运行四大智能体）
   const fc = document.getElementById('forecast-msg');
-  fc.innerHTML = `文件 <b>${d.filename}</b> · ${d.points} 条 · 质量完整度 <b>${((d.quality.completeness||0)*100).toFixed(1)}%</b>`;
+  fc.innerHTML = `数据源 <b>${d.filename}</b> · ${d.points} 条 · 质量完整度 <b>${((d.quality.completeness||0)*100).toFixed(1)}%</b><br>` +
+                 `<span style="color:#ffae42">点击「开始监测」运行四大智能体</span>`;
   fc.style.color = '#5ec1ff';
   renderUploadChart(d.series);
-  // 批量告警仅取最近若干条渲染，避免一次性插入过多 DOM
-  if(d.warning.l1 && Array.isArray(d.warning.l1.alerts)) renderL1(d.warning.l1.alerts.slice(-20));
-  renderL2(d.warning.l2);
-  renderL3(d.warning.l3);
-  renderFH(d.work_order);
+  document.getElementById('wa-level').textContent = '级别 --';
+  document.getElementById('l1-cnt').textContent = '0';
+  document.getElementById('l2-cnt').textContent = '0';
+  document.getElementById('l3-cnt').textContent = '0';
+  document.getElementById('wo-cnt').textContent = '0';
   input.value = '';
 }
 
-// 上传数据绘制到主曲线图（等间隔抽样，最多 2000 点）
+// 上传数据绘制到主曲线图（等间隔抽样，最多 2000 点，全部 12 传感器）
 function renderUploadChart(series){
   lastForecast = null;
-  buf = { inlet:[], out:[], press:[], flow:[], hum:[], ts:[] };
-  const n = series.timestamp.length;
+  buf = { ts: [] };
+  SENSORS.forEach(s=>{ buf[s[0]] = []; });
+  const ts = series && series.timestamp || [];
+  const n = ts.length;
   for(let i=0;i<n;i++){
-    buf.ts.push((series.timestamp[i]||'').slice(11));
-    buf.inlet.push(series.inlet_temp[i]);
-    buf.out.push(series.outlet_temp[i]);
-    buf.press.push(series.pressure[i]);
-    buf.flow.push(series.flow_rate[i]);
-    buf.hum.push(series.cabinet_humidity[i]);
+    buf.ts.push((ts[i]||'').slice(11));
+    SENSORS.forEach(s=>{ buf[s[0]].push((series[s[0]]||[])[i]!==undefined ? series[s[0]][i] : null); });
   }
   ptTotal = n;
   document.getElementById('pt-count').textContent = buf.ts.length + ' 点';
   document.getElementById('pt-count2').textContent = ptTotal;
   chart.setOption({
     xAxis:{data: buf.ts},
-    series:[
-      {data:buf.inlet},{data:buf.out},{data:buf.press},{data:buf.flow},{data:buf.hum},{data:[]}
-    ]
+    series: buildSeries(buf, [])
   });
 }
 
@@ -646,6 +759,11 @@ async function health(){
 }
 window.addEventListener('resize', ()=>chart.resize());
 health();
+// 初始化：默认非"自定义上传"，上传按钮禁用
+(function(){
+  const btn = document.getElementById('upload-btn');
+  if(btn) btn.classList.add('disabled');
+})();
 </script>
 </body>
 </html>

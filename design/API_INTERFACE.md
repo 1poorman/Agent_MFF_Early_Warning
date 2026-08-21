@@ -290,7 +290,7 @@ curl -s -X POST http://localhost:8000/api/v1/workflow/run \
 # stdio（供 MCP Host / Agent 平台挂载）
 python -m server.mcp_server
 # HTTP 远程调用
-python -m server.mcp_server --transport streamable-http --port 8100
+python -m server.mcp_server --transport streamable-http --port 8105
 ```
 
 ### 3.1 握手（initialize）

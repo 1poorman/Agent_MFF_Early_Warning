@@ -6,7 +6,7 @@
 
 import threading
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import pandas as pd
 
@@ -51,6 +51,9 @@ class AgentService:
         # 实时数据缓存（供界面展示）
         self.latest_window: Optional[pd.DataFrame] = None
         self.latest_result = None
+        # 上传时序数据源（用户上传后作为监测数据源，点击开始监测才运行四大智能体）
+        self.uploaded_data: Optional[List[Dict]] = None
+        self.uploaded_meta: Optional[Dict] = None
         # 电气柜凝露预测器（露点计算 + 缓变趋势外推）
         self.dew = CondensationPredictor(
             margin_warn_c=self.cfg.rules.dew_margin_warn_c, window_s=600, horizon_s=600)
@@ -61,6 +64,8 @@ class AgentService:
         except Exception as e:
             self.tsdb_ok = False
             logger.warning("时序数据库不可用: %s", e)
+        # 实时流日志缓冲（供 stream/logs 查询，未启动流时返回空）
+        self.reset_stream()
         logger.info("服务初始化完成 | use_llm=%s fast_models=%s anomaly=%s tsdb=%s",
                     use_llm, list(self.pipeline.fast_models.keys()),
                     self.pipeline.detector is not None, self.tsdb_ok)
@@ -122,6 +127,39 @@ class AgentService:
         self.latest_result = result
         return result
 
+    # ---------------- 上传数据源管理 ----------------
+
+    def set_uploaded_data(self, records: List[Dict], meta: Dict):
+        """保存上传的时序数据作为监测数据源（点击开始监测后回放运行四大智能体）。
+
+        统一归一化：timestamp 转字符串、数值字段转 float（避免 Timestamp/numpy 类型
+        在 WS JSON 序列化时失败），非数值字段（工况/故障标注）保留原样。
+        """
+        import numpy as _np
+        norm = []
+        for r in records:
+            row = dict(r)
+            ts = row.get("timestamp")
+            row["timestamp"] = ts.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts, "strftime") else str(ts)
+            for k, v in row.items():
+                if k == "timestamp":
+                    continue
+                if isinstance(v, (_np.floating, float)):
+                    row[k] = float(v)
+                elif isinstance(v, (_np.integer, int)):
+                    row[k] = float(v)
+                elif isinstance(v, _np.ndarray):
+                    row[k] = float(v[0])
+            norm.append(row)
+        self.uploaded_data = norm
+        self.uploaded_meta = meta
+        logger.info("上传数据源就绪 | %s 条=%d", meta.get("filename", ""), len(norm))
+
+    def clear_uploaded_data(self):
+        """清除上传数据源（回到仿真数据源）。"""
+        self.uploaded_data = None
+        self.uploaded_meta = None
+
     # ---------------- 流式实时处理 ----------------
 
     def reset_stream(self, max_points: int = 20000):
@@ -142,8 +180,9 @@ class AgentService:
         self.preloaded = 0                   # 已预加载数据条数
         self.dew_log = []                    # 凝露风险预警日志
         self._stream_cols = ["inlet_temp", "outlet_temp", "pressure", "flow_rate",
-                             "tank_level", "cabinet_temp", "cabinet_humidity",
-                             "furnace_temp", "electric_power"]
+                             "flow_velocity", "tank_level", "conductivity",
+                             "cabinet_temp", "cabinet_humidity", "furnace_temp",
+                             "electric_power", "electric_current"]
 
     # ---------------- 预加载（不推送、不分析，仅填充缓冲） ----------------
 
@@ -438,9 +477,6 @@ class AgentService:
     def _rule_sensor(rule_id: str) -> str:
         from workflow.pipeline import RULE_TO_SENSOR
         return RULE_TO_SENSOR.get(rule_id, "")
-
-    def get_stream_logs(self):
-        return {"l1": self.l1_log[-50:], "l2": self.l2_log[-50:], "l3": self.l3_log[-20:]}
 
     def diagnose(self, features, condition="unknown", sensor_names=None,
                  l1_alerts=None, l2_forecast=None, stats=None, extra_candidates=None):

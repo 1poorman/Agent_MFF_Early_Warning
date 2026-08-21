@@ -21,8 +21,8 @@ app:
 # ---------------- MCP Server ----------------
 mcp:
   host: 0.0.0.0
-  port: 8100                     # streamable-http 传输端口
-  transport: streamable-http     # stdio / sse / streamable-http
+  port: 8105                     # streamable-http 传输端口
+  transport: stdio               # stdio / sse / streamable-http（无参数默认 stdio，供智能体平台挂载）
 
 # ---------------- 日志 ----------------
 logging:

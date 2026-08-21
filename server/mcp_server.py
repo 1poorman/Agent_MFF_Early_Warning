@@ -12,7 +12,7 @@
 启动（stdio，供 MCP Host 挂载）：
     python -m server.mcp_server
 启动（HTTP 远程调用）：
-    python -m server.mcp_server --transport streamable-http --port 8100
+    python -m server.mcp_server --transport streamable-http --port 8105
 """
 
 import argparse
@@ -20,8 +20,6 @@ import json
 from typing import Optional
 
 from mcp.server.mcpserver import MCPServer
-
-from .service import AgentService
 
 mcp = MCPServer(name="mff-early-warning", version="1.1.0")
 
@@ -31,8 +29,10 @@ _ag = None
 def ag():
     global _ag
     if _ag is None:
+        # 延迟导入：避免模块导入期初始化日志（stdio 模式下 stdout 是协议通道）
         from .agents import (ContinuousOptimizerAgent, DataManagementAgent,
                              FaultHandlingAgent, WarningAnalysisAgent)
+        from .service import AgentService
         s = AgentService.get()
         _ag = {
             "data_manager": DataManagementAgent(s),
@@ -160,18 +160,21 @@ def workflow_run(duration: int = 600, fault: str = "pipe_leak",
 
 def main():
     from config import get_logger, get_settings, setup_logging
-    setup_logging()
-    logger = get_logger("server.mcp_server")
     mcp_cfg = get_settings().mcp
     parser = argparse.ArgumentParser(description="中频炉预警智能体 MCP Server")
-    parser.add_argument("--transport", default=mcp_cfg.transport,
+    parser.add_argument("--transport", default="stdio",
                         choices=["stdio", "sse", "streamable-http"])
     parser.add_argument("--host", default=mcp_cfg.host)
     parser.add_argument("--port", type=int, default=mcp_cfg.port)
     args = parser.parse_args()
+    is_stdio = args.transport == "stdio"
+    # stdio 模式下控制台日志必须禁用：stdout 是 JSON-RPC 协议通道，
+    # 混入日志行会破坏 MCP Host 解析（协议错误）。文件日志仍保留。
+    setup_logging(console=not is_stdio)
+    logger = get_logger("server.mcp_server")
     logger.info("MCP Server 启动 | transport=%s host=%s port=%s",
                 args.transport, args.host, args.port)
-    if args.transport == "stdio":
+    if is_stdio:
         mcp.run(transport="stdio")
     else:
         mcp.run(transport=args.transport, host=args.host, port=args.port)

@@ -33,8 +33,8 @@ class AppSettings:
 @dataclass
 class MCPSettings:
     host: str = "0.0.0.0"
-    port: int = 8100
-    transport: str = "streamable-http"
+    port: int = 8105
+    transport: str = "stdio"
 
 
 @dataclass

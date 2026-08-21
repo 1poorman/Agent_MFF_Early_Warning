@@ -4,7 +4,7 @@
 # 服务：
 #   postgres  时序数据库（PostgreSQL 16，月度分区自动建表）
 #   api       RESTful API + Web 界面（uvicorn，端口 8000）
-#   mcp       MCP Server（streamable-http，端口 8100）
+#   mcp       MCP Server（streamable-http，端口 8105）
 #
 # 启动：
 #   docker compose up -d --build
@@ -69,9 +69,9 @@ services:
     image: mff-agent:latest
     container_name: mff-mcp
     restart: unless-stopped
-    command: ["python", "-m", "server.mcp_server", "--transport", "streamable-http", "--port", "8100"]
+    command: ["python", "-m", "server.mcp_server", "--transport", "streamable-http", "--port", "8105"]
     ports:
-      - "8100:8100"
+      - "8105:8105"
     environment:
       MFF_APP_ENV: prod
       MFF_DATABASE_DSN: postgresql://postgres:postgres@postgres:5432/mff_tsdb
