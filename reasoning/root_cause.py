@@ -84,11 +84,12 @@ class RootCauseReasoner:
 【统计鉴别特征（窗口计算，判定依据，必须优先依据此节）】
 {stats_text}
 判定规则（严格遵循）：
+- 湿度均值 > 70%RH，或 湿度上升量 > 4%RH 且流量/压力下降 → 管道泄漏（水汽逸散铁证；湿度趋势上升即使绝对值未达70也判泄漏）
 - 压力波动幅度_std（已去趋势）> 3kPa 且 湿度均值 ≤ 65%RH → 水泵气蚀（压力震荡、湿度正常）
-- 压力 < 150kPa 且 湿度均值 > 70%RH → 管道泄漏（湿度显著升高是泄漏的必要条件，湿度均值 ≤ 65%RH 时禁止判泄漏）
-- 流量 < 6.4L/s 且 压力 < 230kPa 且无压力震荡 → 过滤器堵塞（过滤器阻抗升高：流量低+压力低）
+- 流量 < 6.4L/s 且 压力 < 230kPa 且无压力震荡且湿度未上升 → 过滤器堵塞（过滤器阻抗升高：流量低+压力低，湿度不变）
 - 流量 < 6.4L/s 且 压力 > 230kPa → 线圈结垢（线圈热阻增大：流量低+压力偏高）
 - 进出水温差 > 20℃ 且流量正常 → 线圈结垢
+注意：湿度持续上升是泄漏区别于堵塞的关键——堵塞不改变湿度，泄漏使湿度单调上升。
 
 【实时异常特征】{json.dumps(report.get('features', {}), ensure_ascii=False)}
 
@@ -185,16 +186,21 @@ class RootCauseReasoner:
             sop = parsed.get("sop", self.kg.actions_for_fault(rc))
 
             # 统计硬校验（防 LLM 误判，演示稳定性保障）：
-            #  湿度均值未显著升高(≤65%RH)时不得诊断为管道泄漏；
-            #  此时若压力波动显著(std>3kPa)则应为水泵气蚀。
+            # ① 湿度绝对值未升(≤65)且无上升趋势(≤4)时不得判泄漏；若有震荡则判气蚀
+            # ② 湿度上升趋势明显(>4)时不得判堵塞/结垢（堵塞不改变湿度）
             stats = report.get("stats", {})
             press_std = float(stats.get("压力波动幅度_std_kPa", 0.0) or 0.0)
             hum_mean = float(stats.get("湿度均值_pctRH", 50.0) or 50.0)
-            if rc == "管道泄漏" and hum_mean <= 65.0:
+            hum_delta = float(stats.get("湿度上升量_pctRH", 0.0) or 0.0)
+            if rc == "管道泄漏" and hum_mean <= 65.0 and hum_delta <= 4.0:
                 if press_std > 3.0:
                     rc = "水泵气蚀"  # 压力震荡+湿度正常 -> 气蚀
                     sop = self.kg.actions_for_fault(rc)
                 conf = min(conf, 0.75)  # 与统计特征矛盾，置信度封顶
+            elif rc in ("过滤器堵塞", "线圈结垢") and hum_delta > 4.0:
+                rc = "管道泄漏"  # 湿度显著上升=水汽逸散，堵塞/结垢不改变湿度
+                sop = self.kg.actions_for_fault(rc)
+                conf = max(min(conf, 0.85), 0.7)
 
             check = self.checker.check(features, rc, evidence)
             result = DiagnosisResult(rc, conf, evidence, sop, check=check, raw=raw, retries=attempt)

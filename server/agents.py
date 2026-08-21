@@ -169,6 +169,13 @@ class WarningAnalysisAgent:
             if "cabinet_humidity" in tail.columns:
                 stats["湿度均值_pctRH"] = round(float(tail["cabinet_humidity"].mean()), 1)
                 features["湿度"] = stats["湿度均值_pctRH"]
+                # 湿度上升趋势（泄漏早期信号）：尾段120s均值 - 前段120s均值
+                if len(df) >= 240:
+                    head = df.iloc[-240:-120]
+                    hum_delta = round(float(tail["cabinet_humidity"].mean())
+                                      - float(head["cabinet_humidity"].mean()), 1)
+                    stats["湿度上升量_pctRH"] = hum_delta
+                    features["_hum_delta"] = hum_delta
             if "flow_rate" in tail.columns:
                 stats["流量均值_Lps"] = round(float(tail["flow_rate"].mean()), 2)
             if "tank_level" in tail.columns:
@@ -223,17 +230,24 @@ class WarningAnalysisAgent:
 
     @staticmethod
     def _stat_precheck(features: Dict, stats: Dict) -> List[str]:
-        """统计预鉴别：返回倾向根因列表（与提示词判定规则一致）。"""
+        """统计预鉴别：返回倾向根因列表（与提示词判定规则一致）。
+
+        泄漏早期判定：湿度绝对值可能未达 70%RH，但"湿度上升趋势"(Δhum)
+        是水汽逸散的铁证——堵塞时湿度基本不变。结合压力/流量下降联动，
+        可在泄漏爬升前期即正确区分泄漏与堵塞。
+        """
         out = []
         hum = float(stats.get("湿度均值_pctRH", 50.0))
+        hum_delta = float(stats.get("湿度上升量_pctRH", 0.0) or 0.0)
         press = float(stats.get("压力均值_kPa", features.get("压力", 240.0)))
         press_std = float(stats.get("压力波动幅度_std_kPa", 0.0))
         flow = float(stats.get("流量均值_Lps", features.get("流量", 8.0)))
-        if hum > 70:
+        # 泄漏：湿度高 或 湿度持续上升趋势(>4%RH)伴随流量/压力下降（爬升早期即可识别）
+        if hum > 70 or (hum_delta > 4.0 and (flow < 7.8 or press < 240)):
             out.append("管道泄漏")
         elif press_std > 3.0:
             out.append("水泵气蚀")
-        if flow < 6.4:
+        if flow < 6.4 and "管道泄漏" not in out:
             out.append("线圈结垢" if press > 230 else "过滤器堵塞")
         return out
 

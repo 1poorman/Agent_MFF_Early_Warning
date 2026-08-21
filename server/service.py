@@ -221,6 +221,13 @@ class AgentService:
             if "cabinet_humidity" in tail.columns:
                 stats["湿度均值_pctRH"] = round(float(tail["cabinet_humidity"].mean()), 1)
                 features["湿度"] = stats["湿度均值_pctRH"]
+                # 湿度上升趋势（泄漏早期信号）：尾段120s均值 - 前段120s均值
+                if len(df) >= 240:
+                    head = df.iloc[-240:-120]
+                    hum_delta = round(float(tail["cabinet_humidity"].mean())
+                                      - float(head["cabinet_humidity"].mean()), 1)
+                    stats["湿度上升量_pctRH"] = hum_delta
+                    features["_hum_delta"] = hum_delta
             if "pressure" in tail.columns:
                 import numpy as np
                 v = tail["pressure"].to_numpy(dtype=float)

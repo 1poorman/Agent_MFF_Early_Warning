@@ -187,17 +187,20 @@ class EarlyWarningPipeline:
         flow, press = f.get("流量"), f.get("压力")
         hum, level = f.get("湿度"), f.get("水箱液位")
         out_t, in_t = f.get("出水温度"), f.get("进水温度")
-        cond = f.get("_conductivity")
+        hum_delta = f.get("_hum_delta", 0.0)
         # 数值鉴别（特征组合越特异越优先；不依赖未触发规则的字段）
         delta_t = (out_t - in_t) if (out_t is not None and in_t is not None) else None
         press_std = f.get("_press_std", 0.0)
         # 判定优先级：越特异的统计组合越优先
         # 湿度是气蚀/泄漏的决定性区分特征（泄漏->湿度升高，气蚀->湿度正常）
+        # 湿度上升趋势>4%RH 是泄漏早期铁证（绝对值未达70也判泄漏；堵塞不改变湿度）
         # 压力水平区分堵塞/结垢：堵塞(过滤器阻抗)->流量低压力低；结垢(线圈阻抗)->流量低压力高
         if hum is not None and hum > 70 and press is not None and press < 150:
             rc = "管道泄漏"                                    # 压力低+湿度显著升高（最特异）
         elif hum is not None and hum > 70:
             rc = "管道泄漏"                                    # 湿度显著升高（泄漏水汽）
+        elif hum_delta > 4.0 and (flow is not None and flow < 7.8 or press is not None and press < 240):
+            rc = "管道泄漏"                                    # 湿度上升趋势+流量/压力下降（泄漏早期）
         elif press_std > 3.0 and (hum is None or hum <= 65):
             rc = "水泵气蚀"                                    # 压力去趋势震荡显著且湿度正常（气蚀脉动）
         elif flow is not None and flow < 6.4 and press is not None and press > 230:
