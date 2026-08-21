@@ -26,6 +26,9 @@
   button.primary { background:#1f6feb; border-color:#1f6feb; }
   button.danger { background:#8a2626; border-color:#8a2626; }
   button:disabled { opacity:.45; cursor:not-allowed; }
+  .file-btn { background:#1c2c4a; border:1px dashed #2e4a7a; border-radius:5px; padding:4px 10px;
+              font-size:12px; color:#8fb3e8; cursor:pointer; white-space:nowrap; }
+  .file-btn:hover { background:#27406b; }
   .hint { font-size:10px; color:#6b7d9e; margin-left:auto; white-space:nowrap; }
 
   .layout { flex:1 1 auto; min-height:0; display:grid; gap:9px; padding:9px 18px 12px;
@@ -57,7 +60,7 @@
   .panel div { padding:1.5px 0; border-bottom:1px solid #16223a; }
   .lv1 { color:#ffe14d; } .lv2 { color:#ffae42; }
   .score { font-size:15px; font-weight:700; color:#5ee08a; }
-  .s-l1 { flex:0 0 88px; } .s-l2 { flex:0 0 100px; }
+  .s-l1 { flex:0 0 88px; } .s-l2 { flex:0 0 168px; }
   .s-l3 { flex:1 1 auto; }
   .s-l3 .panel { background:transparent; padding:0; }
   .wo { background:#101a2c; border-left:3px solid #ff8a8a; border-radius:5px; padding:5px 8px;
@@ -65,6 +68,20 @@
   .wo .row { margin:2px 0; color:#b9c6dd; }
   .wo b.rc { color:#ff8a8a; font-size:11.5px; }
   .muted { color:#6b7d9e; font-size:10.5px; }
+  /* L2 布局：异常分 + GRU 预测 并列 */
+  .l2-grid { display:grid; grid-template-columns:96px 1fr; gap:6px; margin-bottom:4px; flex:0 0 auto; }
+  .l2-item { background:#182640; border:1px solid #26406b; border-radius:6px; padding:4px 6px; min-width:0; }
+  .l2-item .t { font-size:9.5px; color:#7f93b8; }
+  .bar { height:5px; background:#0a1120; border-radius:3px; overflow:hidden; margin:3px 0 1px; }
+  #anomaly-bar { height:100%; width:0%; background:#5ee08a; transition:width .3s; }
+  .fc-msg { font-size:10px; color:#5ec1ff; line-height:1.4; }
+  /* L3 上下文：判断依据 + 维修记录 */
+  .ctx { margin-top:4px; border-top:1px dashed #223456; padding-top:4px; }
+  .ctx-item { font-size:10px; color:#9fb2cf; margin:2px 0; display:flex; gap:6px; line-height:1.45; }
+  .ctx-k { flex:0 0 56px; color:#5ec1ff; font-weight:600;
+           font-family:"PingFang SC","Microsoft YaHei",sans-serif; }
+  .ctx-mt { flex-direction:column; }
+  .ctx-mt .ctx-k { flex:0 0 auto; }
 
   .right-col { grid-column:3; display:grid; gap:9px;
                grid-template-rows: minmax(0,1.5fr) minmax(0,1fr); }
@@ -76,6 +93,12 @@
   .wo-big .tag { font-size:10px; padding:1px 7px; border-radius:7px; margin-right:5px; }
   .t-red { background:#5e1c1c; color:#ff8a8a; } .t-orange { background:#5e4216; color:#ffcf8a; }
   .t-yellow { background:#5e5a16; color:#ffe14d; }
+  /* 工单输出：通知 / SOP / 备件 / 应急 并列 2x2 */
+  .wo-grid { display:grid; grid-template-columns:1fr 1fr; gap:5px; margin-top:6px; }
+  .wg { background:#141d2e; border:1px solid #223456; border-radius:5px; padding:4px 7px; min-width:0; }
+  .wg-t { font-size:10px; color:#8fb3e8; font-weight:600; margin-bottom:2px; }
+  .wg-b { font-size:10px; color:#b9c6dd; line-height:1.45; overflow-wrap:break-word; }
+  .wg-b .ok { color:#5ee08a; } .wg-b .warn { color:#ffae42; }
   #fh-area { flex:1 1 auto; min-height:0; overflow-y:auto; }
   .stats-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; flex:0 0 auto; }
   .stat { background:#182640; border:1px solid #26406b; border-radius:6px; padding:6px; text-align:center; }
@@ -100,6 +123,9 @@
     <option value="pipe_leak">管道泄漏</option>
     <option value="scale_buildup">线圈结垢(缓变)</option>
   </select>
+  <label class="file-btn" title="支持 data/simulated/*.csv 同格式时序数据，自动全链路预警诊断">
+    上传时序数据<input type="file" id="file-input" accept=".csv,.json,.jsonl" hidden onchange="uploadFile(this)">
+  </label>
   <label>倍速</label>
   <select id="speed">
     <option value="10">10x</option>
@@ -108,6 +134,12 @@
   </select>
   <button class="primary" id="btn-start" onclick="startStream()">▶ 开始监测</button>
   <button class="danger" id="btn-stop" onclick="stopStream()" disabled>■ 停止</button>
+  <label>预测模型</label>
+  <select id="fmodel" onchange="setForecastModel(this.value)">
+    <option value="gru">GRU 快轨</option>
+    <option value="patchtst">PatchTST 精轨</option>
+    <option value="timesfm">TimesFM-2.5</option>
+  </select>
   <label>压/流量轴</label>
   <select id="yscale" onchange="setYScale(this.value)">
     <option value="linear">线性</option>
@@ -130,7 +162,7 @@
       <div class="metric"><div class="v" id="m-hum">--</div><div class="l">湿度 %RH</div></div>
     </div>
     <div id="chart"></div>
-    <div class="qline">实时接收 <b id="pt-count2">0</b> 条 · 输出格式 <b>1Hz/1位小数（L1/L2 直接可用）</b> · 虚线=GRU 未来10min预测</div>
+    <div class="qline">实时接收 <b id="pt-count2">0</b> 条 · 输出格式 <b>1Hz/1位小数（L1/L2 直接可用）</b> · 虚线=预测模型未来10min趋势</div>
   </div>
 
   <!-- ② 预警分析智能体 -->
@@ -142,12 +174,20 @@
       <div class="panel" id="l1-panel"><div class="muted">暂无预警</div></div>
     </div>
     <div class="sec s-l2">
-      <div class="sh"><span>L2 异常检测 + GRU 趋势预测</span><span class="cnt" id="l2-cnt">0</span></div>
-      <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;flex-wrap:wrap">
-        <span class="muted">异常分</span><span class="score" id="anomaly-score">0.00</span>
-        <span class="muted" id="forecast-msg">等待数据≥2min...</span>
-        <span class="muted" id="trend-msg"></span>
+      <div class="sh"><span>L2 异常检测 + 时序预测（<span id="fmodel-name">GRU</span>）</span><span class="cnt" id="l2-cnt">0</span></div>
+      <div class="l2-grid">
+        <div class="l2-item">
+          <div class="t">异常分 VAE+IF</div>
+          <span class="score" id="anomaly-score">0.00</span>
+          <div class="bar"><div id="anomaly-bar"></div></div>
+          <div class="t">阈值 0.6</div>
+        </div>
+        <div class="l2-item">
+          <div class="t" id="fc-title">GRU 出水温度预测（残差学习）</div>
+          <div class="fc-msg" id="forecast-msg">等待数据≥2min...</div>
+        </div>
       </div>
+      <div class="muted" id="trend-msg" style="margin-bottom:2px"></div>
       <div class="muted" id="dew-ind" style="font-size:10.5px;margin-bottom:3px">凝露监测中...</div>
       <div class="panel" id="l2-panel"><div class="muted">暂无预警</div></div>
     </div>
@@ -283,62 +323,129 @@ function renderL1(list){
 }
 
 function renderL2(l2){
+  if(!l2) return;
+  const score = l2.anomaly_score||0;
   const sc = document.getElementById('anomaly-score');
-  sc.textContent = (l2.anomaly_score||0).toFixed(2);
-  sc.style.color = l2.anomaly_score > 0.6 ? '#ff8a8a' : '#5ee08a';
+  sc.textContent = score.toFixed(2);
+  sc.style.color = score > 0.6 ? '#ff8a8a' : (score > 0.4 ? '#ffae42' : '#5ee08a');
+  const bar = document.getElementById('anomaly-bar');
+  if(bar){
+    bar.style.width = Math.min(100, score*100) + '%';
+    bar.style.background = score > 0.6 ? '#ff8a8a' : (score > 0.4 ? '#ffae42' : '#5ee08a');
+  }
   const tm = document.getElementById('trend-msg');
-  if(l2.exceed_eta){ tm.textContent='| ⚠ 预测出水温度 '+ (l2.exceed_eta/60).toFixed(1) +'min 后越限'; tm.style.color='#ffae42'; }
+  if(l2.exceed_eta){ tm.innerHTML = '⚠ 预测出水温度 '+ (l2.exceed_eta/60).toFixed(1) +'min 后越限 55℃'; tm.style.color='#ffae42'; }
   else { tm.textContent=''; }
-  // GRU 预测
+  // 预测（含末值/峰值/谷值，模型名随后端切换）
   if(l2.forecast){
     lastForecast = l2.forecast.series;   // 供曲线虚线展示
-    document.getElementById('forecast-msg').innerHTML =
-      `GRU预测: 未来10min 出水温度 ${l2.forecast.end_value}℃（峰值${l2.forecast.max_value}℃）`;
-    document.getElementById('forecast-msg').style.color='#5ec1ff';
+    const h = (l2.forecast.horizon_s||600)/60;
+    const m = (l2.forecast.method||'GRU').toUpperCase();
+    const mt = document.getElementById('fc-title');
+    if(mt) mt.textContent = m + ' 出水温度预测';
+    document.getElementById('fmodel-name').textContent = m;
+    const fc = document.getElementById('forecast-msg');
+    fc.innerHTML =
+      `未来 <b>${h}min</b> 出水温度 末值 <b>${l2.forecast.end_value}℃</b> · 峰值 <b>${l2.forecast.max_value}℃</b> · 谷值 <b>${l2.forecast.min_value}℃</b>`;
+    fc.style.color = l2.forecast.max_value > 55 ? '#ffae42' : '#5ec1ff';
     if(l2.forecast.max_value > 55){
       l2n++;
       const p=document.getElementById('l2-panel');
-      p.insertAdjacentHTML('afterbegin', `<div class="lv2">[趋势] GRU预测出水温度峰值 ${l2.forecast.max_value}℃ 将越限</div>`);
+      p.insertAdjacentHTML('afterbegin', `<div class="lv2">[趋势] ${m} 预测出水温度峰值 ${l2.forecast.max_value}℃ 将越限</div>`);
       document.getElementById('l2-cnt').textContent = l2n;
       while(p.children.length>20) p.lastChild.remove();
     }
   }
-  if(l2.anomaly_score > 0.6){
+  if(score > 0.6){
     l2n++;
     const p=document.getElementById('l2-panel');
-    p.insertAdjacentHTML('afterbegin', `<div class="lv2">[异常] VAE+IF 异常分 ${l2.anomaly_score.toFixed(2)} 超阈</div>`);
+    p.insertAdjacentHTML('afterbegin', `<div class="lv2">[异常] VAE+IF 异常分 ${score.toFixed(2)} 超阈 0.6</div>`);
     document.getElementById('l2-cnt').textContent = l2n;
     while(p.children.length>20) p.lastChild.remove();
   }
 }
 
 function renderL3(d){
-  if(d==='diagnosing'){ document.getElementById('l3-area').innerHTML='<div class="muted lv3">⏳ L3 根因推理中（3~5s）...</div>'; return; }
+  if(d==='diagnosing'){ document.getElementById('l3-area').innerHTML='<div class="muted lv3">L3 根因推理中（3~5s）...</div>'; return; }
   if(!d || typeof d !== 'object') return;
   l3n++;
   document.getElementById('wa-level').textContent = '级别 ' + (d.level||'orange').toUpperCase();
   const area = document.getElementById('l3-area');
+  const ctx = d.context||{};
+  const hc = d.hallucination_check||{};
+  // L1/L2 上报上下文（规则去重集合）
+  const l1s = (ctx.l1_rules||[]).length ? (ctx.l1_rules||[]).join('、')
+             : (ctx.l1_alerts||[]).map(a=>a.rule_id).join('、') || '无';
+  const l2c = ctx.l2||{};
+  const l2Txt = `异常分 ${(l2c.anomaly_score??0).toFixed(2)}` +
+    (l2c.trend_exceed ? ` · 越限预测 ${(l2c.trend_exceed.eta_s/60).toFixed(1)}min` : '');
+  // 特征值与统计特征（判断依据）
+  const feats = ctx.features||{};
+  const featTxt = Object.keys(feats).length
+    ? Object.entries(feats).map(([k,v])=>`${k}=${v}`).join(' · ')
+    : '无';
+  const stats = ctx.stats||{};
+  const statsTxt = Object.keys(stats).length
+    ? Object.entries(stats).map(([k,v])=>`${k}=${v}`).join(' · ')
+    : '无';
+  // 维修记录（与故障直接相关）
+  const mts = ctx.maintenance_log||[];
+  const mtTxt = mts.length
+    ? mts.map(m=>`<div>[${m.date}] ${m.component}: ${m.action}${m.note?'（'+m.note+'）':''}</div>`).join('')
+    : '<div>近期无维修记录</div>';
+  const evi = (d.evidence||[]).join('；') || '无';
+  const gate = d.gate_action ? ` · 门控 ${d.gate_action}` : '';
   area.insertAdjacentHTML('afterbegin', `
     <div class="wo">
-      <div class="row"><b class="rc">${d.root_cause}</b> <span class="muted">置信度 ${(d.confidence*100).toFixed(0)}% · 物理${d.hallucination_check.physics?'✔':'✘'} 图谱${d.hallucination_check.kg?'✔':'✘'}</span></div>
-      <div class="row muted">${(d.evidence||[]).slice(0,1).join('；')}</div>
+      <div class="row"><b class="rc">${d.root_cause}</b> <span class="muted">置信度 ${(d.confidence*100).toFixed(0)}% · 物理${hc.physics?'✔':'✘'} 图谱${hc.kg?'✔':'✘'}${gate}</span></div>
+      <div class="row muted">依据：${evi}</div>
+      <div class="ctx">
+        <div class="ctx-item"><span class="ctx-k">L1 上报</span><span>${l1s}</span></div>
+        <div class="ctx-item"><span class="ctx-k">L2 上报</span><span>${l2Txt}</span></div>
+        <div class="ctx-item"><span class="ctx-k">特征值</span><span>${featTxt}</span></div>
+        <div class="ctx-item"><span class="ctx-k">统计特征</span><span>${statsTxt}</span></div>
+        <div class="ctx-item ctx-mt"><span class="ctx-k">维修记录</span><span>${mtTxt}</span></div>
+      </div>
     </div>`);
   document.getElementById('l3-cnt').textContent = l3n;
   while(area.children.length>3) area.lastChild.remove();
 }
 
+const CHANNEL_CN = {sound_light_alarm:'声光报警', sms:'短信', phone:'电话', mobile_app:'APP推送'};
 function renderFH(wo){
   if(!wo) return;
   won++;
   document.getElementById('wo-cnt').textContent = won;
+  const area = document.getElementById('fh-area');
+  // 未生成工单（正常数据/未升级）
+  if(wo.handled === false){
+    area.insertAdjacentHTML('afterbegin', `
+      <div class="wo-big yellow">
+        <div class="row muted">${wo.reason||'正常数据，未生成工单'}</div>
+      </div>`);
+    while(area.children.length>3) area.lastChild.remove();
+    return;
+  }
   const lv = wo.level||'orange';
   const ns = wo.notification_summary||{};
-  const area = document.getElementById('fh-area');
+  const chans = (ns.channels||[]).map(c=>CHANNEL_CN[c]||c).join('+')||'—';
+  const rcvs = (ns.receivers||[]).join('、')||'—';
+  const plan = wo.emergency_plan;
+  const sopTxt = (wo.sop||[]).length ? wo.sop.map(s=>'<div>· '+s+'</div>').join('') : '<div class="muted">—</div>';
+  const partsTxt = (wo.spare_parts||[]).length ? wo.spare_parts.join('、') : '<span class="muted">—</span>';
   area.insertAdjacentHTML('afterbegin', `
     <div class="wo-big ${lv}">
-      <div class="row"><span class="tag t-${lv}">${lv.toUpperCase()}</span><b class="rc">${wo.root_cause}</b> <span class="muted">${wo.order_id}</span></div>
-      <div class="row"><b>SOP：</b>${(wo.sop||[]).slice(0,2).join('；')}</div>
-      <div class="row"><b>备件：</b>${(wo.spare_parts||[]).join('、')||'—'} · <b>通知</b> ${ns.total||0} 条（${(ns.channels||[]).join('+')} → ${(ns.receivers||[]).join('、')}）${wo.emergency_plan?'· 预案'+wo.emergency_plan.plan_id:''}</div>
+      <div class="row"><span class="tag t-${lv}">${lv.toUpperCase()}</span><b class="rc">${wo.root_cause}</b>
+        <span class="muted">${wo.order_id}</span>
+        <span class="muted" style="float:right">${(wo.trigger_time||'').slice(5,16)}</span></div>
+      <div class="wo-grid">
+        <div class="wg"><div class="wg-t">处置 SOP</div><div class="wg-b">${sopTxt}</div></div>
+        <div class="wg"><div class="wg-t">所需备件</div><div class="wg-b">${partsTxt}</div></div>
+        <div class="wg"><div class="wg-t">分级通知</div><div class="wg-b">
+          <span class="ok">${ns.total||0} 条</span> · ${chans} → ${rcvs}</div></div>
+        <div class="wg"><div class="wg-t">应急预案</div><div class="wg-b">
+          ${plan ? `<span class="warn">【${plan.plan_id}】${plan.name}</span><br><span class="muted">${plan.risk||''}</span>` : '<span class="muted">—（非红色预警未联动）</span>'}</div></div>
+      </div>
     </div>`);
   while(area.children.length>3) area.lastChild.remove();
 }
@@ -397,7 +504,10 @@ async function resetStream(){
   document.getElementById('l2-cnt').textContent='0';
   document.getElementById('l3-cnt').textContent='0';
   document.getElementById('anomaly-score').textContent='0.00';
+  const bar = document.getElementById('anomaly-bar');
+  if(bar){ bar.style.width='0%'; bar.style.background='#5ee08a'; }
   document.getElementById('forecast-msg').textContent='等待预加载...';
+  document.getElementById('forecast-msg').style.color='#5ec1ff';
   document.getElementById('trend-msg').textContent='';
   const di = document.getElementById('dew-ind');
   if(di){ di.textContent='凝露监测中...'; di.style.color='#5ec1ff'; delete di.dataset.fired; }
@@ -416,7 +526,8 @@ function startStream(){
       ws.send(JSON.stringify({
         fault: document.getElementById('fault').value||null,
         speed: +document.getElementById('speed').value,
-        duration: 1800, fault_start: 300
+        duration: 1800, fault_start: 300,
+        forecast_model: document.getElementById('fmodel').value
       }));
     };
     ws.onmessage = (e)=>{
@@ -424,12 +535,12 @@ function startStream(){
       if(d.done){ stopStream(); return; }
       if(d.error){ console.error(d.error); return; }
       if(d.preload){                       // 预加载阶段
-        document.getElementById('forecast-msg').innerHTML = `⏳ 预加载历史数据 ${d.points} 点（GRU 窗口）...`;
+        document.getElementById('forecast-msg').innerHTML = `预加载历史数据 ${d.points} 点（${d.forecast_model||'GRU'} 窗口）...`;
         document.getElementById('forecast-msg').style.color='#ffae42';
         return;
       }
       if(d.preload_done){                  // 预加载完成，启动实时分析
-        document.getElementById('forecast-msg').innerHTML = `✔ 预加载完成 ${d.points} 点，开始实时分析（GRU 就绪）`;
+        document.getElementById('forecast-msg').innerHTML = `预加载完成 ${d.points} 点，开始实时分析（${d.forecast_model||'GRU'} 就绪）`;
         document.getElementById('forecast-msg').style.color='#5ee08a';
         return;
       }
@@ -449,6 +560,81 @@ function stopStream(){
   document.getElementById('run-status').innerHTML='<span class="badge b-warn">已停止</span>';
   document.getElementById('btn-start').disabled=false;
   document.getElementById('btn-stop').disabled=true;
+}
+
+// ---- 预测模型切换 ----
+const F_MODEL_CN = {gru:'GRU 快轨(残差学习)', patchtst:'PatchTST 精轨', timesfm:'TimesFM-2.5'};
+async function setForecastModel(name){
+  const fmodel = document.getElementById('fmodel');
+  const target = name || fmodel.value || 'gru';
+  // 更新标题与下拉框显示
+  document.getElementById('fmodel-name').textContent = F_MODEL_CN[target]||target.toUpperCase();
+  const t = document.getElementById('fc-title');
+  if(t) t.textContent = (F_MODEL_CN[target]||target.toUpperCase()) + ' 出水温度预测';
+  if(fmodel && fmodel.value!==target) fmodel.value = target;
+}
+function getForecastModel(){
+  return document.getElementById('fmodel').value || 'gru';
+}
+
+// ---- 上传时序数据文件：自动全链路预警诊断 ----
+async function uploadFile(input){
+  const f = input && input.files && input.files[0];
+  if(!f) return;
+  stopStream();                       // 停止实时流（若有）
+  const fd = new FormData();
+  fd.append('file', f);
+  fd.append('model', getForecastModel());
+  document.getElementById('run-status').innerHTML='<span class="badge b-run">解析分析中...</span>';
+  let r;
+  try{
+    r = await fetch('/api/v1/upload', {method:'POST', body:fd}).then(res=>res.json());
+  }catch(e){
+    r = {code:1, detail:'网络错误：'+e};
+  }
+  if(r.code!==0){
+    alert('上传失败：' + (r.detail||r.message||'未知错误'));
+    document.getElementById('run-status').innerHTML='<span class="badge b-warn">上传失败</span>';
+    return;
+  }
+  resetStream();
+  const d = r.data;
+  document.getElementById('run-status').innerHTML='<span class="badge b-ok">文件分析完成</span>';
+  document.getElementById('wa-level').textContent = '级别 ' + (d.warning.level||'none').toUpperCase();
+  const fc = document.getElementById('forecast-msg');
+  fc.innerHTML = `文件 <b>${d.filename}</b> · ${d.points} 条 · 质量完整度 <b>${((d.quality.completeness||0)*100).toFixed(1)}%</b>`;
+  fc.style.color = '#5ec1ff';
+  renderUploadChart(d.series);
+  // 批量告警仅取最近若干条渲染，避免一次性插入过多 DOM
+  if(d.warning.l1 && Array.isArray(d.warning.l1.alerts)) renderL1(d.warning.l1.alerts.slice(-20));
+  renderL2(d.warning.l2);
+  renderL3(d.warning.l3);
+  renderFH(d.work_order);
+  input.value = '';
+}
+
+// 上传数据绘制到主曲线图（等间隔抽样，最多 2000 点）
+function renderUploadChart(series){
+  lastForecast = null;
+  buf = { inlet:[], out:[], press:[], flow:[], hum:[], ts:[] };
+  const n = series.timestamp.length;
+  for(let i=0;i<n;i++){
+    buf.ts.push((series.timestamp[i]||'').slice(11));
+    buf.inlet.push(series.inlet_temp[i]);
+    buf.out.push(series.outlet_temp[i]);
+    buf.press.push(series.pressure[i]);
+    buf.flow.push(series.flow_rate[i]);
+    buf.hum.push(series.cabinet_humidity[i]);
+  }
+  ptTotal = n;
+  document.getElementById('pt-count').textContent = buf.ts.length + ' 点';
+  document.getElementById('pt-count2').textContent = ptTotal;
+  chart.setOption({
+    xAxis:{data: buf.ts},
+    series:[
+      {data:buf.inlet},{data:buf.out},{data:buf.press},{data:buf.flow},{data:buf.hum},{data:[]}
+    ]
+  });
 }
 
 async function health(){

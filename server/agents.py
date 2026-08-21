@@ -123,13 +123,17 @@ class WarningAnalysisAgent:
         df = pd.DataFrame(records)
         df["timestamp"] = pd.to_datetime(df["timestamp"])
         last = df.iloc[-1]
+        cond = last.get("operating_condition")
+        condition = "unknown" if cond is None or (
+            isinstance(cond, float) and pd.isna(cond)) else str(cond)
 
         # L1 规则预警
         l1_alerts = self.svc.rule_engine.evaluate(df)
         l1 = l1_alerts.to_dict("records")
 
         # L2 异常检测 + 趋势预测
-        l2 = {"anomaly_score": 0.0, "anomaly_triggered": False, "trend_exceed": None}
+        l2 = {"anomaly_score": 0.0, "anomaly_triggered": False, "trend_exceed": None,
+              "forecast": None}
         det = self.svc.pipeline.detector
         if det is not None and len(df) >= det.window:
             try:
@@ -138,10 +142,18 @@ class WarningAnalysisAgent:
                 l2["anomaly_triggered"] = score > det.threshold
             except Exception:
                 pass
-        fm = self.svc.pipeline.fast_models.get("outlet_temp")
-        if fm is not None and len(df) >= 120:
+        # 统一预测引擎（GRU/PatchTST/TimesFM 可切换），窗口足够时生成 forecast
+        engine = getattr(self.svc.pipeline, "forecast_engine", None)
+        if engine is not None and engine.available() and len(df) >= engine.backend_window():
             try:
-                eta = fm.predict_exceedance(df["outlet_temp"], 55.0)
+                fc = engine.forecast(df["outlet_temp"])
+                if fc is not None:
+                    l2["forecast"] = fc
+            except Exception:
+                pass
+        if engine is not None and engine.available() and len(df) >= 120:
+            try:
+                eta = engine.exceedance_eta(df["outlet_temp"], 55.0)
                 if eta is not None:
                     l2["trend_exceed"] = {"eta_s": round(eta, 1),
                                           "message": f"预测 {eta/60:.1f}min 后出水温度越限 55℃"}
@@ -185,12 +197,27 @@ class WarningAnalysisAgent:
             extra_cands = self._stat_precheck(features, stats)
             try:
                 diag = self.svc.diagnose(
-                    features, str(last.get("operating_condition", "unknown")), sensors,
+                    features, condition, sensors,
                     l1_alerts=l1, l2_forecast={"anomaly_score": l2["anomaly_score"]},
                     stats=stats, extra_candidates=extra_cands)
             except Exception:
                 diag = self.svc.pipeline._fallback_diagnose(sensors, features)
             diagnosis = diag.to_dict()
+            # 附加诊断上下文：判断依据（L1/L2 上报 + 特征值 + 统计特征 + 维修记录）
+            # L1 上报精简：规则集合去重 + 最近 10 条原始记录（避免长窗全量注入）
+            diagnosis["context"] = {
+                "l1_rules": sorted({a["rule_id"] for a in l1}),
+                "l1_alerts": l1[-10:],
+                "l2": {"anomaly_score": l2["anomaly_score"],
+                       "anomaly_triggered": l2["anomaly_triggered"],
+                       "trend_exceed": l2["trend_exceed"]},
+                "features": {k: v for k, v in features.items() if not k.startswith("_")},
+                "stats": stats,
+                "maintenance_log": [
+                    {"order_id": o.order_id, "date": o.date,
+                     "component": o.component, "action": o.action, "note": o.note}
+                    for o in self.svc.maint.recent(days=60)],
+            }
 
         # 汇总预警级别
         level = "none"
@@ -204,7 +231,7 @@ class WarningAnalysisAgent:
         return {
             "agent": "warning_analyzer",
             "timestamp": str(last["timestamp"]),
-            "condition": str(last.get("operating_condition", "unknown")),
+            "condition": condition,
             "level": level,                # none/yellow/orange/red
             "l1": {"triggered": bool(l1), "alerts": l1},
             "l2": l2,

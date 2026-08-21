@@ -142,6 +142,10 @@ class RuleSettings:
 
 @dataclass
 class DetectionSettings:
+    forecast_model: str = "gru"
+    forecast_threshold: float = 55.0
+    forecast_horizon: int = 600
+    timesfm_weights: str = "timesfm/weights"
     fast_window: int = 3600
     fast_horizon: int = 600
     fast_period: int = 8400
@@ -153,8 +157,6 @@ class DetectionSettings:
     anomaly_latent: int = 8
     stream_l2_interval: int = 60
     stream_l3_min_realtime: int = 600
-    forecast_threshold: float = 55.0
-    forecast_horizon: int = 600
     exceed_lookback: int = 600
 
 

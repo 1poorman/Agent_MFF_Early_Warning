@@ -16,6 +16,7 @@ from context import default_maintenance_log, default_operating_schedule
 from detection import RuleEngine
 from detection.fast_anomaly import FastAnomalyDetector
 from detection.fast_track import FastTrackForecaster
+from detection.forecaster import ForecastEngine
 from perception import DataIngestor, QualityController
 from reasoning import KnowledgeGraph, LLMClient, RootCauseReasoner
 from storage import TimeSeriesDB
@@ -81,9 +82,29 @@ class AgentService:
                                              KnowledgeGraph())
             except Exception:
                 use_llm = False
-        return EarlyWarningPipeline(fast_models=fast, anomaly_detector=det,
-                                    reasoner=reasoner, use_llm=use_llm,
-                                    feedback_path=str(cfg.paths.feedback))
+        pipeline = EarlyWarningPipeline(fast_models=fast, anomaly_detector=det,
+                                        reasoner=reasoner, use_llm=use_llm,
+                                        feedback_path=str(cfg.paths.feedback))
+        # L2 预测后端：按 config.detection.forecast_model 可切换
+        pipeline.forecast_engine = ForecastEngine(
+            backend_name=cfg.detection.forecast_model,
+            fast_models=fast,
+            precise_model=self._load_precise(cfg),
+            timesfm_weights_dir=str(cfg.detection.timesfm_weights),
+            horizon_s=cfg.detection.forecast_horizon,
+            models_dir=str(cfg.paths.models))
+        return pipeline
+
+    @staticmethod
+    def _load_precise(cfg):
+        p = cfg.paths.models / "precise.pt"
+        if p.exists():
+            try:
+                from detection.precise_track import PreciseTrackForecaster
+                return PreciseTrackForecaster.load(str(p))
+            except Exception:
+                return None
+        return None
 
     @classmethod
     def get(cls, use_llm: bool = True) -> "AgentService":
@@ -212,27 +233,23 @@ class AgentService:
             except Exception:
                 pass
 
-        # L2 预测：真实 GRU 模型（预加载窗口足够时），每 60 条触发一次
-        fm = self.pipeline.fast_models.get("outlet_temp")
-        if fm is not None and n >= fm.window and (n - self._last_l2_t) >= 60:
+        # L2 预测：统一预测引擎（GRU/PatchTST/TimesFM 可切换），每 60 条触发一次
+        engine = getattr(self.pipeline, "forecast_engine", None)
+        if engine is not None and engine.available() \
+                and n >= engine.backend_window() and (n - self._last_l2_t) >= 60:
             df = pd.DataFrame(self.stream_buf)
             df["timestamp"] = pd.to_datetime(df["timestamp"])
             try:
-                pred = fm.predict(df["outlet_temp"].iloc[-fm.window:])  # 未来 600s
-                out["l2"]["forecast"] = {
-                    "horizon_s": 600,
-                    "end_value": round(float(pred[-1]), 2),
-                    "max_value": round(float(pred.max()), 2),
-                    "min_value": round(float(pred.min()), 2),
-                    "series": [round(float(v), 2) for v in pred[::30]],  # 抽稀 20 点
-                    "method": "GRU+attention(残差学习)",
-                }
-                self._last_l2_t = n
-                eta = fm.predict_exceedance(df["outlet_temp"], 55.0, lookback_s=min(600, n))
-                if eta is not None:
-                    out["l2"]["exceed_eta"] = round(eta, 1)
-                    self.l2_log.append({"timestamp": out["timestamp"], "type": "trend",
-                                        "msg": f"GRU预测出水温度 {eta/60:.1f}min 后越限 55℃"})
+                fc = engine.forecast(df["outlet_temp"])
+                if fc is not None:
+                    out["l2"]["forecast"] = fc
+                    self._last_l2_t = n
+                    if fc["max_value"] > self.cfg.detection.forecast_threshold:
+                        eta = engine.exceedance_eta(df["outlet_temp"], 55.0)
+                        if eta is not None:
+                            out["l2"]["exceed_eta"] = round(eta, 1)
+                            self.l2_log.append({"timestamp": out["timestamp"], "type": "trend",
+                                                "msg": f"{fc['method']}预测出水温度 {eta/60:.1f}min 后越限 55℃"})
             except Exception:
                 pass
 
@@ -308,13 +325,30 @@ class AgentService:
                 features["_press_std"] = stats.get("压力波动幅度_std_kPa", 0.0)
             from .agents import WarningAnalysisAgent
             extra_cands = WarningAnalysisAgent._stat_precheck(features, stats)
+            cond = last.get("operating_condition")
+            condition = "unknown" if cond is None or (
+                isinstance(cond, float) and pd.isna(cond)) else str(cond)
             try:
-                diag = self.diagnose(features, str(last.get("operating_condition", "unknown")),
+                diag = self.diagnose(features, condition,
                                      sensors, stats=stats, extra_candidates=extra_cands)
             except Exception:
                 diag = self.pipeline._fallback_diagnose(sensors, features)
                 diag.confidence = min(diag.confidence, 0.65)
             diag_dict = diag.to_dict()
+            # 附加诊断上下文（与故障直接相关：L1/L2 上报 + 特征值 + 统计特征 + 维修记录）
+            l1_ctx = snapshot["l1"]
+            diag_dict["context"] = {
+                "l1_rules": sorted({a["rule_id"] for a in l1_ctx}),
+                "l1_alerts": l1_ctx[-10:],
+                "l2": {"anomaly_score": snapshot["anomaly_score"],
+                       "anomaly_triggered": snapshot["anomaly_score"] > (self.pipeline.detector.threshold if self.pipeline.detector else 0.6)},
+                "features": {k: v for k, v in features.items() if not k.startswith("_")},
+                "stats": stats,
+                "maintenance_log": [
+                    {"order_id": o.order_id, "date": o.date,
+                     "component": o.component, "action": o.action, "note": o.note}
+                    for o in self.maint.recent(days=60)],
+            }
             # 线程安全：置唯一标志，防止并发重复诊断/重复工单
             self.l3_finalized = True
             self.l3_log.append({"timestamp": str(last.get("timestamp", "")), **diag_dict})

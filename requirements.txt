@@ -13,6 +13,12 @@ fastapi>=0.110
 uvicorn[standard]>=0.29
 mcp>=1.0
 
+# TimesFM-2.5 L2 预测后端（transformers 移植版权重 timesfm/weights）
+transformers>=5.0
+huggingface_hub
+safetensors
+soxr  # librosa 的音频解码依赖（transformers 导入链需要）
+
 # 时序数据库（本地 PostgreSQL 分区表）
 psycopg2-binary>=2.9
 

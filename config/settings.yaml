@@ -115,6 +115,10 @@ rules:
 
 # ---------------- L2 检测 / 实时流 ----------------
 detection:
+  forecast_model: gru            # L2 预测模型: gru / patchtst / timesfm（可切换）
+  forecast_threshold: 55.0       # 出水温度越限预测阈值 (℃)
+  forecast_horizon: 600          # 越限预测水平（秒）
+  timesfm_weights: timesfm/weights   # TimesFM-2.5 本地权重目录
   fast_window: 3600              # GRU 快轨输入窗口（秒）
   fast_horizon: 600              # GRU 预测步长（秒，≤10min）
   fast_period: 8400              # 工况循环周期（秒）
@@ -126,8 +130,6 @@ detection:
   anomaly_latent: 8              # VAE 隐变量维度
   stream_l2_interval: 60         # L2 预测节流（条）
   stream_l3_min_realtime: 600    # L3 触发所需实时段最小条数
-  forecast_threshold: 55.0       # 出水温度越限预测阈值 (℃)
-  forecast_horizon: 600          # 越限预测水平（秒）
   exceed_lookback: 600           # 越限预测回看（秒）
 
 # ---------------- 数据质量管控 ----------------

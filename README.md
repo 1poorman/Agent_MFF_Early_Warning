@@ -70,11 +70,12 @@ pkill -f "uvicorn server.api"
 ```
 
 **界面操作**（单屏四智能体布局，无需滚动）：
-1. 顶部选择故障场景（正常/过滤器堵塞/水泵气蚀/管道泄漏/线圈结垢）与回放倍速
-2. 点击"开始监测"——数据 1Hz 按倍速流入：
+1. 顶部选择故障场景（正常/过滤器堵塞/水泵气蚀/管道泄漏/线圈结垢）、回放倍速与 **L2 预测模型**（GRU 快轨 / PatchTST 精轨 / TimesFM-2.5，可随时切换）
+2. 也可点击"**上传时序数据**"直接提交 `data/simulated/*.csv` 同格式文件，自动执行全链路预警诊断（数据管理→预警分析→故障处置）并绘制曲线
+3. 点击"开始监测"——数据 1Hz 按倍速流入：
    - **① 数据管理智能体**（左）：实时物理量曲线 + 6 指标卡片 + 质量管控状态
-   - **② 预警分析智能体**（中）：L1 规则日志 / L2 异常分仪表与趋势预测 / L3 根因诊断卡片
-   - **③ 故障处置智能体**（右上）：自动生成工单（级别/根因/SOP/备件/推送明细/应急预案）
+   - **② 预警分析智能体**（中）：L1 规则日志 / L2 异常分仪表与趋势预测（含模型名）/ L3 根因诊断卡片（含判断依据、L1/L2 上报与近期维修记录上下文）
+   - **③ 故障处置智能体**（右上）：自动生成工单（级别/根因/**SOP/备件/通知/应急预案 2×2 并列**）
    - **④ 持续优化智能体**（右下）：反馈归档统计、训练样本计数、知识库更新日志
 
 ```bash
@@ -117,6 +118,27 @@ docker compose down             # 停止（保留数据卷）
 - 模型权重 `models/` 只读挂载、`data/` 与 `logs/` 读写挂载，不随镜像分发
 - 默认 CPU 版 PyTorch；如需 CUDA：`docker build --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu130 -t mff-agent:latest .`
 
+### 2.5 公网访问（ngrok 内网穿透）
+
+服务已绑定 `0.0.0.0:8000`，本机/局域网可直接访问。若需公网访问（NAT 内网环境）：
+
+```bash
+# 1. 安装 ngrok（用户级，无需 root）
+curl -sL https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz | tar xz -C ~/.local/bin
+export PATH=$HOME/.local/bin:$PATH
+
+# 2. 配置 authtoken（免费注册 https://dashboard.ngrok.com 获取）
+ngrok config add-authtoken <你的authtoken>
+
+# 3. 暴露 8000 端口（公网 HTTPS 地址）
+ngrok http 8000
+# 输出形如：https://xxxx.ngrok-free.dev -> http://localhost:8000
+```
+
+- 公网地址支持全部接口（RESTful API / Swagger / Web 界面 / WebSocket 实时流 / 上传诊断）
+- 免费版会话地址每次重启会变化；长期固定地址需购买 ngrok 域名
+- 停止隧道：`kill $(cat /tmp/ngrok.pid)`（若为 nohup 后台启动）
+
 ## 三、四大智能体与 API
 
 | 智能体 | 职责 | RESTful | MCP 工具 |
@@ -157,12 +179,25 @@ Hampel 滤波 + 速率限制）→ **同工况加权插补**（误差 <2%）。
 - 进水温度阈值**季节动态修正**（24h 滚动基线上浮，消除夏季误报）
 - 电气柜**凝露预测**：Magnus-Tetens 露点 + 裕度线性趋势外推（提前 ~10min 预警）
 
-### 4.4 L2 双轨预测与异常检测（detection/）
+### 4.4 L2 预测模型可切换 + 双轨异常检测（detection/）
+
+**预测模型后端可切换**（`detection/forecaster.py` 统一接口，前端下拉框/API 参数即切即用）：
+
+| 后端 | 模型 | 加载方式 | 窗口 | 说明 |
+|---|---|---|---|---|
+| `gru`（默认） | 快轨 GRU+attention 残差学习 | `models/fast_outlet_temp.pt` | 16800s | 边缘常驻，MAPE 1.05% |
+| `patchtst` | 通道独立 PatchTST 精轨 | `models/precise.pt` | 7200s | 多参数联合预测 |
+| `timesfm` | TimesFM-2.5 基础模型（200M） | `timesfm/weights/` 本地权重（925MB，transformers 移植版，无需联网） | 1024s | 基础大模型泛化，输出 128 步 |
+
+- 配置：`config/settings.yaml` → `detection.forecast_model`（gru/patchtst/timesfm）
+- 切换：Demo 顶部"预测模型"下拉框（实时流与上传文件均生效）；API `POST /api/v1/upload?model=timesfm`；`GET /api/v1/forecast-model` 查询当前模型
+- 统一输出契约：`{horizon_s, end_value, max_value, min_value, series, method}`，前端曲线虚线展示
+- 加载失败自动降级 GRU，保证 7×24 可用
+
+**异常检测轨**（始终在线）：
 
 | 轨道 | 模型 | 场景 | 实测 |
 |---|---|---|---|
-| 快轨 | GRU+attention **残差学习**（末值持续基线+模型学偏差） | 单参数 ≤10min，边缘常驻 | MAPE 1.05% |
-| 精轨 | 通道独立 PatchTST | 多参数联合 30min | MAPE <5% |
 | 异常轨 | VAE（仅正常数据训练）+ 孤立森林（残差特征空间） | 始终在线 | 检出 99.9%/误报 0.61% |
 | 路由 | 参数数×步长×异常置信度规则分流 | 快轨↔精轨自动升级/降级 | 4/4 正确 |
 
@@ -221,7 +256,8 @@ python -c "from storage import TimeSeriesDB; print(TimeSeriesDB().stats())"  # �
 config/        集中参数设置（settings.yaml）+ 统一日志配置
 simulator/     物理机理数据仿真（含 4 类故障注入）
 perception/    数据接入与质量管控
-detection/     L1 规则引擎 / L2 快轨+精轨+异常检测 / 模型路由
+detection/     L1 规则引擎 / L2 预测(GRU/PatchTST/TimesFM 可切换)+异常检测 / 模型路由
+timesfm/       官方 TimesFM-2.5 源码 + 本地权重（L2 基础大模型后端）
 reasoning/     知识图谱 / LLM 根因推理 / 三层防幻觉 / 置信度门控
 action/        工单 / 分级推送 / 应急预案 / 反馈归档
 workflow/      五节点端到端编排
@@ -256,6 +292,15 @@ cfg.simulator           # 仿真器参数
 
 各模块提供 `from_settings()` 便捷构造（`SimConfig`、`RuleThresholds`、`DBConfig`、`QualityController`），
 服务层 `AgentService` 已全部改为从集中配置读取。
+
+L2 预测模型可在配置中切换（demo 前端下拉框/API 参数即切即用）：
+
+```yaml
+detection:
+  forecast_model: gru      # gru / patchtst / timesfm
+  forecast_horizon: 600    # 预测步长（秒）
+  timesfm_weights: timesfm/weights   # TimesFM-2.5 本地权重目录
+```
 
 ### 7.2 运行日志（config/logging_config.py）
 

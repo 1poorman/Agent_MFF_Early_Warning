@@ -10,12 +10,14 @@
 """
 
 import asyncio
+import io
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import numpy as np
 import pandas as pd
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -202,6 +204,100 @@ def latest():
     return {"code": 0, "data": out}
 
 
+# ---------------- 时序数据文件上传（自动预警诊断） ----------------
+
+@app.get("/api/v1/forecast-model")
+async def get_forecast_model():
+    """获取当前 L2 预测模型与可用模型列表。"""
+    s = svc()
+    engine = getattr(s.pipeline, "forecast_engine", None)
+    return {"code": 0, "data": {
+        "current": engine.name if engine else "gru",
+        "available": ["gru", "patchtst", "timesfm"],
+        "horizon_s": engine.horizon_s if engine else 600,
+    }}
+
+
+@app.post("/api/v1/upload")
+async def upload_analyze(file: UploadFile = File(...), model: str = Form("gru")):
+    """上传时序数据文件（CSV/JSON，格式同 simulator 输出契约），
+    自动执行 数据管理 -> 预警分析 -> 故障处置 全链路并返回结果。
+
+    CSV 列契约见 perception/ingest.py ALL_COLUMNS；
+    缺列自动补 NaN（质量管控插补），timestamp 为必填列。
+    model: L2 预测模型（gru/patchtst/timesfm），默认取 config 配置。
+    """
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="上传文件为空")
+    try:
+        name = (file.filename or "").lower()
+        if name.endswith((".json", ".jsonl")):
+            df = pd.read_json(io.BytesIO(raw))
+        else:
+            df = pd.read_csv(io.BytesIO(raw))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"文件解析失败: {e}")
+    if "timestamp" not in df.columns:
+        raise HTTPException(status_code=400, detail="数据缺少 timestamp 列")
+
+    # 补全数据契约列（缺失列填 NaN，交由质量管控插补/兜底），保证全字段可处理
+    from perception.ingest import ALL_COLUMNS
+    for c in ALL_COLUMNS:
+        if c not in df.columns:
+            df[c] = np.nan
+    df = df[ALL_COLUMNS].dropna(subset=["timestamp"])
+    if df.empty:
+        raise HTTPException(status_code=400, detail="无有效数据行")
+    logger.info("上传文件解析完成 | %s 行=%d", file.filename, len(df))
+
+    s = svc()
+    records = df.to_dict("records")
+    # L2 预测模型临时切换（model 参数），分析后恢复
+    engine = getattr(s.pipeline, "forecast_engine", None)
+    prev = None
+    if engine is not None and model in ("gru", "patchtst", "timesfm"):
+        prev = engine.name
+        if model != prev:
+            engine.switch(model, fast_models=s.pipeline.fast_models,
+                          models_dir=str(s.cfg.paths.models))
+            logger.info("上传分析切换预测模型: %s -> %s", prev, model)
+    try:
+        # ① 数据管理智能体：质量管控
+        dm = DataManagementAgent(s).ingest(records)
+        # ② 预警分析智能体：L1/L2/L3
+        wa = WarningAnalysisAgent(s).analyze(dm["records"])
+        # ③ 故障处置智能体：工单 + 通知
+        fh = FaultHandlingAgent(s).handle(wa)
+    finally:
+        if engine is not None and prev is not None and model != prev:
+            engine.switch(prev, fast_models=s.pipeline.fast_models,
+                          models_dir=str(s.cfg.paths.models))
+    logger.info("上传数据分析完成 | %s 预警级别=%s 根因=%s",
+                file.filename, wa["level"],
+                (wa["l3"] or {}).get("root_cause", "无"))
+
+    # 绘图用序列（等间隔抽样，最多 2000 点）
+    step = max(1, len(df) // 2000)
+    sub = df.iloc[::step]
+    series = {
+        "timestamp": sub["timestamp"].astype(str).tolist(),
+        "inlet_temp": sub["inlet_temp"].round(1).tolist(),
+        "outlet_temp": sub["outlet_temp"].round(1).tolist(),
+        "pressure": sub["pressure"].round(1).tolist(),
+        "flow_rate": sub["flow_rate"].round(2).tolist(),
+        "cabinet_humidity": sub["cabinet_humidity"].round(1).tolist(),
+    }
+    return {"code": 0, "data": {
+        "filename": file.filename,
+        "points": len(dm["records"]),
+        "quality": dm["quality"],
+        "warning": wa,
+        "work_order": fh,
+        "series": series,
+    }}
+
+
 # ---------------- 实时流（WebSocket） ----------------
 
 class StreamRequest(BaseModel):
@@ -224,26 +320,34 @@ async def stream_ws(ws: WebSocket):
         fault_start = int(req_raw.get("fault_start", 120))
         speed = float(req_raw.get("speed", 20.0))
         duration = int(req_raw.get("duration", 1800))
-        logger.info("实时流参数 | fault=%s fault_start=%d speed=%.1f duration=%d",
-                    fault, fault_start, speed, duration)
+        forecast_model = str(req_raw.get("forecast_model") or "").lower()
+        logger.info("实时流参数 | fault=%s fault_start=%d speed=%.1f duration=%d forecast_model=%s",
+                    fault, fault_start, speed, duration, forecast_model)
+
+        # L2 预测模型运行时切换（GRU/PatchTST/TimesFM）
+        engine = getattr(s.pipeline, "forecast_engine", None)
+        if engine is not None and forecast_model in ("gru", "patchtst", "timesfm"):
+            engine.switch(forecast_model, fast_models=s.pipeline.fast_models,
+                          models_dir=str(s.cfg.paths.models))
+            logger.info("实时流预测模型: %s", engine.name)
+        model_name = engine.name if engine else "gru"
 
         from simulator import DataSimulator, FaultSpec, SimConfig
-        # 预加载量 = GRU 快轨窗口（16800s=4.6h），保证 L2 用真实 GRU 预测；
-        # 故障起始相对实时流起点偏移（fault_start 由前端传入）
-        warmup_s = s.pipeline.fast_models["outlet_temp"].window \
-            if "outlet_temp" in s.pipeline.fast_models else 16800
+        # 预加载量 = 当前预测后端窗口（GRU 16800s=4.6h / PatchTST 7200s / TimesFM 1024s）
+        warmup_s = engine.backend_window() if engine is not None else 16800
         faults = [FaultSpec(name=fault, start=warmup_s + fault_start, ramp=300, severity=0.9)] \
             if fault else []
         sim = DataSimulator(config=SimConfig(seed=42), faults=faults)
 
         loop = asyncio.get_event_loop()
         # ---- 预加载阶段：填充缓冲不推送，界面提示 ----
-        await ws.send_json({"preload": True, "points": warmup_s})
+        await ws.send_json({"preload": True, "points": warmup_s, "forecast_model": model_name})
         for _ in range(warmup_s):
             row = sim._sense(sim.step())
             row["timestamp"] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
             s.preload_row(row)
-        await ws.send_json({"preload_done": True, "points": s.preloaded})
+        await ws.send_json({"preload_done": True, "points": s.preloaded,
+                            "forecast_model": model_name})
 
         # ---- 实时推送阶段 ----
         interval = 1.0 / max(speed, 1.0)
