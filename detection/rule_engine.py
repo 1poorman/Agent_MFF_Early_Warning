@@ -111,12 +111,16 @@ class RuleEngine:
         if margin < th.dew_margin_warn_c:
             add("DEW_MARGIN_LOW", f"电气柜凝露裕度 {margin:.1f}℃ 低于 {th.dew_margin_warn_c}℃", margin)
 
+        # 湿度显著升高 -> 疑似泄漏水汽（知识库：泄漏使环境湿度升高）
+        if row["cabinet_humidity"] > 70.0:
+            add("HUMIDITY_HIGH", f"湿度 {row['cabinet_humidity']:.0f}%RH 超 70%RH：疑似泄漏水汽", row["cabinet_humidity"])
+
         # 组合逻辑：流量不足 + 出水高温 → 积热风险
         if flow_ratio < th.flow_low_ratio and row["outlet_temp"] > th.outlet_temp_high:
             add("COMBO_HEAT_BUILDUP", "流量<80%额定 且 出水温度超限：线圈积热风险", row["outlet_temp"])
-        # 组合逻辑：压力低 + 湿度高 → 疑似泄漏
-        if row["pressure"] < th.pressure_low_kpa and row["cabinet_humidity"] > 70.0:
-            add("COMBO_LEAK_SUSPECT", "压力低 且 湿度>70%RH：疑似管路泄漏", row["pressure"])
+        # 组合逻辑：压力偏低 + 湿度高 → 疑似泄漏（压力阈值 180kPa 覆盖泄漏中期）
+        if row["pressure"] < 180.0 and row["cabinet_humidity"] > 70.0:
+            add("COMBO_LEAK_SUSPECT", "压力偏低 且 湿度>70%RH：疑似管路泄漏", row["pressure"])
 
         return alerts
 

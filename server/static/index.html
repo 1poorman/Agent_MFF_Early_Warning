@@ -28,7 +28,6 @@
   button:disabled { opacity:.45; cursor:not-allowed; }
   .hint { font-size:10px; color:#6b7d9e; margin-left:auto; white-space:nowrap; }
 
-  /* 单屏三列布局：①数据管理 | ②预警分析 | ③④故障处置+持续优化 */
   .layout { flex:1 1 auto; min-height:0; display:grid; gap:9px; padding:9px 18px 12px;
             grid-template-columns: 1.55fr 1fr 1.05fr;
             grid-template-rows: minmax(0,1fr); }
@@ -39,9 +38,7 @@
   .agent-tag { font-size:10px; background:#1c2c4a; color:#5ec1ff; border:1px solid #2e4a7a;
                padding:1px 7px; border-radius:8px; margin-right:6px; white-space:nowrap; }
   .cnt { font-size:10px; color:#5ee08a; font-weight:400; }
-  .sub { font-size:10.5px; color:#7f93b8; margin:4px 0 3px; flex:0 0 auto; }
 
-  /* ① 数据管理智能体 */
   .dm-card { grid-column:1; }
   .metrics { display:grid; grid-template-columns:repeat(6,1fr); gap:7px; margin-bottom:7px; flex:0 0 auto; }
   .metric { background:#182640; border:1px solid #26406b; border-radius:7px; padding:5px 3px; text-align:center; }
@@ -51,9 +48,8 @@
   .qline { flex:0 0 auto; font-size:10.5px; color:#6b7d9e; margin-top:5px; }
   .qline b { color:#5ee08a; font-weight:600; }
 
-  /* ② 预警分析智能体 */
   .wa-card { grid-column:2; }
-  .sec { border:1px solid #1d2f52; border-radius:7px; padding:5px 7px; margin-bottom:6px; }
+  .sec { border:1px solid #1d2f52; border-radius:7px; padding:5px 7px; margin-bottom:6px; display:flex; flex-direction:column; min-height:0; }
   .sec .sh { font-size:11px; font-weight:600; margin-bottom:3px; display:flex; justify-content:space-between; }
   .s-l1 .sh { color:#ffe14d; } .s-l2 .sh { color:#ffae42; } .s-l3 .sh { color:#ff8a8a; }
   .panel { flex:1 1 auto; min-height:0; overflow-y:auto; font-family:monospace; font-size:10.5px;
@@ -61,7 +57,8 @@
   .panel div { padding:1.5px 0; border-bottom:1px solid #16223a; }
   .lv1 { color:#ffe14d; } .lv2 { color:#ffae42; }
   .score { font-size:15px; font-weight:700; color:#5ee08a; }
-  .s-l3 { flex:1 1 auto; display:flex; flex-direction:column; min-height:0; }
+  .s-l1 { flex:0 0 88px; } .s-l2 { flex:0 0 100px; }
+  .s-l3 { flex:1 1 auto; }
   .s-l3 .panel { background:transparent; padding:0; }
   .wo { background:#101a2c; border-left:3px solid #ff8a8a; border-radius:5px; padding:5px 8px;
         margin-bottom:5px; font-size:10.5px; flex:0 0 auto; }
@@ -69,7 +66,6 @@
   .wo b.rc { color:#ff8a8a; font-size:11.5px; }
   .muted { color:#6b7d9e; font-size:10.5px; }
 
-  /* ③④ 故障处置 + 持续优化 */
   .right-col { grid-column:3; display:grid; gap:9px;
                grid-template-rows: minmax(0,1.5fr) minmax(0,1fr); }
   .wo-big { background:#101a2c; border-left:3px solid #ff5e5e; border-radius:6px; padding:8px 10px;
@@ -85,7 +81,7 @@
   .stat { background:#182640; border:1px solid #26406b; border-radius:6px; padding:6px; text-align:center; }
   .stat .v { font-size:16px; font-weight:700; color:#5ee08a; }
   .stat .l { font-size:9.5px; color:#7f93b8; margin-top:2px; }
-  #kb-log { font-family:monospace; font-size:10px; color:#5ee08a; margin-top:6px;
+  #co-log { font-family:monospace; font-size:10px; color:#5ee08a; margin-top:6px;
             flex:1 1 auto; min-height:0; overflow-y:auto; }
 </style>
 </head>
@@ -112,7 +108,7 @@
   </select>
   <button class="primary" id="btn-start" onclick="startStream()">▶ 开始监测</button>
   <button class="danger" id="btn-stop" onclick="stopStream()" disabled>■ 停止</button>
-  <span class="hint">数据 1Hz 倍速回放 · ①数据管理→②预警分析→③故障处置→④持续优化 自动流转</span>
+  <span class="hint">数据实时流动 · L1/L2 毫秒级 · L3 后台推理(3~5s) · ①②③④ 自动联动</span>
 </div>
 
 <div class="layout">
@@ -129,7 +125,7 @@
       <div class="metric"><div class="v" id="m-hum">--</div><div class="l">湿度 %RH</div></div>
     </div>
     <div id="chart"></div>
-    <div class="qline">质量管控：完整度 <b id="q-comp">100%</b> · 插补 <b id="q-imp">0</b> · 剔除 <b id="q-out">0</b> · 输出格式 <b>1Hz/1位小数（L1/L2 直接可用）</b></div>
+    <div class="qline">实时接收 <b id="pt-count2">0</b> 条 · 输出格式 <b>1Hz/1位小数（L1/L2 直接可用）</b> · 虚线=GRU 未来10min预测</div>
   </div>
 
   <!-- ② 预警分析智能体 -->
@@ -138,19 +134,20 @@
         <span class="cnt" id="wa-level">—</span></h2>
     <div class="sec s-l1">
       <div class="sh"><span>L1 规则预警（毫秒级）</span><span class="cnt" id="l1-cnt">0</span></div>
-      <div class="panel" id="l1-panel" style="max-height:70px"><div class="muted">暂无预警</div></div>
+      <div class="panel" id="l1-panel"><div class="muted">暂无预警</div></div>
     </div>
     <div class="sec s-l2">
-      <div class="sh"><span>L2 趋势 / 异常检测</span><span class="cnt" id="l2-cnt">0</span></div>
-      <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
+      <div class="sh"><span>L2 异常检测 + GRU 趋势预测</span><span class="cnt" id="l2-cnt">0</span></div>
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;flex-wrap:wrap">
         <span class="muted">异常分</span><span class="score" id="anomaly-score">0.00</span>
+        <span class="muted" id="forecast-msg">等待数据≥2min...</span>
         <span class="muted" id="trend-msg"></span>
       </div>
-      <div class="panel" id="l2-panel" style="max-height:56px"><div class="muted">暂无预警</div></div>
+      <div class="panel" id="l2-panel"><div class="muted">暂无预警</div></div>
     </div>
     <div class="sec s-l3">
       <div class="sh"><span>L3 大模型根因诊断（三层防幻觉）</span><span class="cnt" id="l3-cnt">0</span></div>
-      <div class="panel" id="l3-area"><div class="muted">暂无诊断。L1 触发或 L2 超阈时自动推理。</div></div>
+      <div class="panel" id="l3-area"><div class="muted">暂无诊断。L1/L2 触发后后台推理（3~5s）。</div></div>
     </div>
   </div>
 
@@ -159,7 +156,7 @@
     <div class="card">
       <h2><span><span class="agent-tag">③ 故障处置智能体</span>工单 · 应急 · 通知</span>
           <span class="cnt" id="wo-cnt">0</span></h2>
-      <div id="fh-area"><div class="muted">暂无工单。预警升级后自动生成。</div></div>
+      <div id="fh-area"><div class="muted">暂无工单。L3 诊断完成后自动生成并推送。</div></div>
     </div>
     <div class="card">
       <h2><span><span class="agent-tag">④ 持续优化智能体</span>反馈 · 知识库</span>
@@ -170,21 +167,22 @@
         <div class="stat"><div class="v" id="kb-orders">6</div><div class="l">知识库工单</div></div>
         <div class="stat"><div class="v" id="fb-false">0</div><div class="l">误报样本</div></div>
       </div>
-      <div id="kb-log"></div>
+      <div id="co-log"></div>
     </div>
   </div>
 </div>
 
 <script>
 const chart = echarts.init(document.getElementById('chart'), 'dark');
-const MAXP = 120;
+const MAXP = 150;
 let buf = { inlet:[], out:[], press:[], flow:[], hum:[], ts:[] };
-let ws = null, l1n=0, l2n=0, l3n=0, won=0;
+let ws = null, l1n=0, l2n=0, l3n=0, won=0, pollTimer=null, ptTotal=0;
+let lastForecast = null;   // 最近一次 GRU 预测序列
 
 chart.setOption({
   backgroundColor:'transparent',
   tooltip:{trigger:'axis'},
-  legend:{data:['进水温度','出水温度','压力','流量','湿度'], textStyle:{color:'#b9c6dd',fontSize:10}},
+  legend:{data:['进水温度','出水温度','压力','流量','湿度','出水温度预测'], textStyle:{color:'#b9c6dd',fontSize:10}},
   grid:{left:42,right:46,top:28,bottom:20},
   xAxis:{type:'category', data:[], axisLabel:{color:'#7f93b8',fontSize:10}},
   yAxis:[
@@ -196,28 +194,50 @@ chart.setOption({
     {name:'出水温度', type:'line', data:[], smooth:true, showSymbol:false, lineStyle:{color:'#ff8a5e'}, itemStyle:{color:'#ff8a5e'}},
     {name:'压力', type:'line', yAxisIndex:1, data:[], smooth:true, showSymbol:false, lineStyle:{color:'#5ec1ff'}, itemStyle:{color:'#5ec1ff'}},
     {name:'流量', type:'line', yAxisIndex:1, data:[], smooth:true, showSymbol:false, lineStyle:{color:'#5ee08a'}, itemStyle:{color:'#5ee08a'}},
-    {name:'湿度', type:'line', data:[], smooth:true, showSymbol:false, lineStyle:{color:'#c98aff'}, itemStyle:{color:'#c98aff'}}
+    {name:'湿度', type:'line', data:[], smooth:true, showSymbol:false, lineStyle:{color:'#c98aff'}, itemStyle:{color:'#c98aff'}},
+    {name:'出水温度预测', type:'line', data:[], smooth:true, showSymbol:false,
+     lineStyle:{color:'#ff8a5e', type:'dashed', width:1.5}, itemStyle:{color:'#ff8a5e'}}
   ]
 });
 
 function pushPoint(d){
   const m = d.metrics, t = (d.timestamp||'').slice(11);
+  ptTotal++;
   buf.ts.push(t); buf.inlet.push(m.inlet_temp); buf.out.push(m.outlet_temp);
   buf.press.push(m.pressure); buf.flow.push(m.flow_rate); buf.hum.push(m.cabinet_humidity);
   if (buf.ts.length > MAXP){ for(const k in buf) buf[k].shift(); }
-  chart.setOption({ xAxis:{data:buf.ts},
-    series:[{data:buf.inlet},{data:buf.out},{data:buf.press},{data:buf.flow},{data:buf.hum}] });
+  // 预测曲线：x 轴追加未来 10min 标签，虚线预测段（前段 null 对齐实际数据）
+  const fc = lastForecast || [];
+  let xAll = buf.ts.slice(), fcData = [];
+  if (fc.length){
+    const lastT = buf.ts[buf.ts.length-1];
+    const secOfDay = (+lastT.slice(0,2))*3600 + (+lastT.slice(3,5))*60 + (+lastT.slice(6,8));
+    fc.forEach((v,i)=>{
+      const fut = secOfDay + Math.round((i+1)*30);
+      const hh = String(Math.floor((fut%86400)/3600)).padStart(2,'0');
+      const mm = String(Math.floor((fut%3600)/60)).padStart(2,'0');
+      xAll.push(hh+':'+mm);
+    });
+    fcData = new Array(buf.ts.length).fill(null).concat(fc);
+  }
+  chart.setOption({
+    xAxis:{data: xAll},
+    series:[
+      {data:buf.inlet},{data:buf.out},{data:buf.press},{data:buf.flow},{data:buf.hum},
+      {data: fcData}
+    ]
+  });
   setText('m-inlet', m.inlet_temp); setText('m-out', m.outlet_temp);
   setText('m-press', m.pressure); setText('m-flow', m.flow_rate);
   setText('m-furn', m.furnace_temp); setText('m-hum', m.cabinet_humidity);
   document.getElementById('pt-count').textContent = buf.ts.length + ' 点';
+  document.getElementById('pt-count2').textContent = ptTotal;
 }
 function setText(id, v){ if(v!==undefined && v!==null) document.getElementById(id).textContent = (+v).toFixed(1); }
 
 function renderL1(list){
   if(!list || !list.length) return;
   const p = document.getElementById('l1-panel');
-  if(l1n===0) p.innerHTML='';
   list.forEach(a=>{
     l1n++;
     p.insertAdjacentHTML('afterbegin', `<div class="lv1">[${(a.timestamp||'').slice(11)}] <b>${a.rule_id}</b> ${a.message}</div>`);
@@ -231,32 +251,43 @@ function renderL2(l2){
   sc.textContent = (l2.anomaly_score||0).toFixed(2);
   sc.style.color = l2.anomaly_score > 0.6 ? '#ff8a8a' : '#5ee08a';
   const tm = document.getElementById('trend-msg');
-  let hit = null;
-  if(l2.exceed_eta){ hit = `预测出水温度 ${(l2.exceed_eta/60).toFixed(1)}min 后越限`; tm.textContent='| '+hit; tm.style.color='#ffae42'; }
-  else if (l2.anomaly_score > 0.6){ hit = `VAE+IF 异常分 ${l2.anomaly_score.toFixed(2)} 超阈`; tm.textContent=''; }
+  if(l2.exceed_eta){ tm.textContent='| ⚠ 预测出水温度 '+ (l2.exceed_eta/60).toFixed(1) +'min 后越限'; tm.style.color='#ffae42'; }
   else { tm.textContent=''; }
-  if(hit){
+  // GRU 预测
+  if(l2.forecast){
+    lastForecast = l2.forecast.series;   // 供曲线虚线展示
+    document.getElementById('forecast-msg').innerHTML =
+      `GRU预测: 未来10min 出水温度 ${l2.forecast.end_value}℃（峰值${l2.forecast.max_value}℃）`;
+    document.getElementById('forecast-msg').style.color='#5ec1ff';
+    if(l2.forecast.max_value > 55){
+      l2n++;
+      const p=document.getElementById('l2-panel');
+      p.insertAdjacentHTML('afterbegin', `<div class="lv2">[趋势] GRU预测出水温度峰值 ${l2.forecast.max_value}℃ 将越限</div>`);
+      document.getElementById('l2-cnt').textContent = l2n;
+      while(p.children.length>20) p.lastChild.remove();
+    }
+  }
+  if(l2.anomaly_score > 0.6){
     l2n++;
     const p=document.getElementById('l2-panel');
-    if(l2n===1) p.innerHTML='';
-    p.insertAdjacentHTML('afterbegin', `<div class="lv2">[${(l2.t||'').slice(11)||''}] ${hit}</div>`);
+    p.insertAdjacentHTML('afterbegin', `<div class="lv2">[异常] VAE+IF 异常分 ${l2.anomaly_score.toFixed(2)} 超阈</div>`);
     document.getElementById('l2-cnt').textContent = l2n;
     while(p.children.length>20) p.lastChild.remove();
   }
 }
 
 function renderL3(d){
-  if(!d) return;
+  if(d==='diagnosing'){ document.getElementById('l3-area').innerHTML='<div class="muted lv3">⏳ L3 根因推理中（3~5s）...</div>'; return; }
+  if(!d || typeof d !== 'object') return;
   l3n++;
   document.getElementById('wa-level').textContent = '级别 ' + (d.level||'orange').toUpperCase();
-  const lv = d.level||'orange';
   const area = document.getElementById('l3-area');
-  if(l3n===1) area.innerHTML='';
   area.insertAdjacentHTML('afterbegin', `
     <div class="wo">
       <div class="row"><b class="rc">${d.root_cause}</b> <span class="muted">置信度 ${(d.confidence*100).toFixed(0)}% · 物理${d.hallucination_check.physics?'✔':'✘'} 图谱${d.hallucination_check.kg?'✔':'✘'}</span></div>
       <div class="row muted">${(d.evidence||[]).slice(0,1).join('；')}</div>
     </div>`);
+  document.getElementById('l3-cnt').textContent = l3n;
   while(area.children.length>3) area.lastChild.remove();
 }
 
@@ -267,67 +298,105 @@ function renderFH(wo){
   const lv = wo.level||'orange';
   const ns = wo.notification_summary||{};
   const area = document.getElementById('fh-area');
-  if(won===1) area.innerHTML='';
   area.insertAdjacentHTML('afterbegin', `
     <div class="wo-big ${lv}">
       <div class="row"><span class="tag t-${lv}">${lv.toUpperCase()}</span><b class="rc">${wo.root_cause}</b> <span class="muted">${wo.order_id}</span></div>
       <div class="row"><b>SOP：</b>${(wo.sop||[]).slice(0,2).join('；')}</div>
-      <div class="row"><b>备件：</b>${(wo.spare_parts||[]).join('、')||'—'}</div>
-      <div class="row muted">通知 ${ns.total||0} 条（${(ns.channels||[]).join('+')} → ${(ns.receivers||[]).join('、')}）
-        ${wo.emergency_plan ? '· 已挂载应急预案 ' + wo.emergency_plan.plan_id : ''}</div>
+      <div class="row"><b>备件：</b>${(wo.spare_parts||[]).join('、')||'—'} · <b>通知</b> ${ns.total||0} 条（${(ns.channels||[]).join('+')} → ${(ns.receivers||[]).join('、')}）${wo.emergency_plan?'· 预案'+wo.emergency_plan.plan_id:''}</div>
     </div>`);
   while(area.children.length>3) area.lastChild.remove();
 }
 
-function renderCO(opt){
-  if(!opt) return;
-  const st = opt.stats||{};
-  document.getElementById('fb-total').textContent = st.total_feedback ?? 0;
-  document.getElementById('fb-true').textContent = st.true_faults ?? 0;
-  document.getElementById('fb-false').textContent = st.false_alarms ?? 0;
+function renderCO(co){
+  if(!co) return;
+  const st = co.stats||{};
+  if(st.total_feedback!==undefined) document.getElementById('fb-total').textContent = st.total_feedback;
+  if(st.true_faults!==undefined) document.getElementById('fb-true').textContent = st.true_faults;
+  if(st.false_alarms!==undefined) document.getElementById('fb-false').textContent = st.false_alarms;
   const rt = document.getElementById('retrain');
-  rt.textContent = st.retrain_pending ? '微调待触发' : '未触发';
+  rt.textContent = st.retrain_pending ? '微调待触发' : '已归档';
   rt.style.color = st.retrain_pending ? '#ffae42' : '#5ee08a';
-  const log = document.getElementById('kb-log');
-  log.insertAdjacentHTML('afterbegin', `<div>[${new Date().toTimeString().slice(0,8)}] 反馈归档 ✔ 训练样本+1</div>`);
-  while(log.children.length>10) log.lastChild.remove();
+}
+
+// ---- 轮询获取后台 L3/工单/反馈（异步不阻塞数据流） ----
+let lastLogLen = {l3:0, wo:0, co:0};
+async function pollLogs(){
+  if(!ws) return;
+  try{
+    const r = await fetch('/api/v1/stream/logs').then(r=>r.json());
+    const d = r.data;
+    if(d.l3.length > lastLogLen.l3){
+      for(const x of d.l3.slice(lastLogLen.l3)) renderL3(x);
+      lastLogLen.l3 = d.l3.length;
+    }
+    if(d.work_orders.length > lastLogLen.wo){
+      for(const x of d.work_orders.slice(lastLogLen.wo)) renderFH(x);
+      lastLogLen.wo = d.work_orders.length;
+    }
+    if(d.feedback.length > lastLogLen.co){
+      for(const x of d.feedback.slice(lastLogLen.co)){
+        renderCO({stats:{total_feedback:x.total, true_faults:x.total, false_alarms:0, retrain_pending:true}});
+        const log = document.getElementById('co-log');
+        log.insertAdjacentHTML('afterbegin', `<div>[${(x.timestamp||'').slice(11)}] 反馈归档 ✔ 训练样本+1</div>`);
+        while(log.children.length>10) log.lastChild.remove();
+      }
+      lastLogLen.co = d.feedback.length;
+    }
+  }catch(e){}
+}
+
+async function resetStream(){
+  await fetch('/api/v1/stream/reset', {method:'POST'});
+  lastLogLen = {l3:0, wo:0, co:0};
+  l1n=l2n=l3n=won=ptTotal=0;
+  lastForecast = null;
+  document.getElementById('l1-panel').innerHTML='<div class="muted">暂无预警</div>';
+  document.getElementById('l2-panel').innerHTML='<div class="muted">暂无预警</div>';
+  document.getElementById('l3-area').innerHTML='<div class="muted">暂无诊断</div>';
+  document.getElementById('fh-area').innerHTML='<div class="muted">暂无工单</div>';
+  document.getElementById('co-log').innerHTML='';
+  document.getElementById('wa-level').textContent='—';
+  document.getElementById('wo-cnt').textContent='0';
+  document.getElementById('l1-cnt').textContent='0';
+  document.getElementById('l2-cnt').textContent='0';
+  document.getElementById('l3-cnt').textContent='0';
+  document.getElementById('anomaly-score').textContent='0.00';
+  document.getElementById('forecast-msg').textContent='等待数据≥2min...';
+  document.getElementById('trend-msg').textContent='';
+  document.getElementById('pt-count2').textContent='0';
 }
 
 function startStream(){
   buf = { inlet:[], out:[], press:[], flow:[], hum:[], ts:[] };
-  l1n=l2n=l3n=0; won=0;
-  document.getElementById('l1-panel').innerHTML='<div class="muted">暂无预警</div>';
-  document.getElementById('l2-panel').innerHTML='<div class="muted">暂无预警</div>';
-  document.getElementById('l3-area').innerHTML='<div class="muted">监测中...</div>';
-  document.getElementById('fh-area').innerHTML='<div class="muted">暂无工单。预警升级后自动生成。</div>';
-  document.getElementById('kb-log').innerHTML='';
-  document.getElementById('wa-level').textContent='—';
-  document.getElementById('wo-cnt').textContent='0';
-  const proto = location.protocol==='https:'?'wss':'ws';
-  ws = new WebSocket(`${proto}://${location.host}/ws/stream`);
-  ws.onopen = ()=>{
-    document.getElementById('run-status').innerHTML='<span class="badge b-run">监测中</span>';
-    document.getElementById('btn-start').disabled=true;
-    document.getElementById('btn-stop').disabled=false;
-    ws.send(JSON.stringify({
-      fault: document.getElementById('fault').value||null,
-      speed: +document.getElementById('speed').value,
-      duration: 1800, fault_start: 300
-    }));
-  };
-  ws.onmessage = (e)=>{
-    const d = JSON.parse(e.data);
-    if(d.done){ stopStream(); return; }
-    if(d.error){ console.error(d.error); return; }
-    pushPoint(d);
-    renderL1(d.l1); renderL2(d.l2); renderL3(d.l3);
-    renderFH(d.work_order); renderCO(d.optimization);
-  };
-  ws.onclose = ()=>{ stopStream(); };
-  ws.onerror = ()=>{ stopStream(); };
+  resetStream().then(()=>{
+    const proto = location.protocol==='https:'?'wss':'ws';
+    ws = new WebSocket(`${proto}://${location.host}/ws/stream`);
+    ws.onopen = ()=>{
+      document.getElementById('run-status').innerHTML='<span class="badge b-run">监测中</span>';
+      document.getElementById('btn-start').disabled=true;
+      document.getElementById('btn-stop').disabled=false;
+      ws.send(JSON.stringify({
+        fault: document.getElementById('fault').value||null,
+        speed: +document.getElementById('speed').value,
+        duration: 1800, fault_start: 300
+      }));
+    };
+    ws.onmessage = (e)=>{
+      const d = JSON.parse(e.data);
+      if(d.done){ stopStream(); return; }
+      if(d.error){ console.error(d.error); return; }
+      pushPoint(d);
+      renderL1(d.l1); renderL2(d.l2); renderL3(d.l3);
+      renderFH(d.work_order); renderCO(d.optimization);
+    };
+    ws.onclose = ()=>{ stopStream(); };
+    ws.onerror = ()=>{ stopStream(); };
+  });
+  pollTimer = setInterval(pollLogs, 3000);
 }
 function stopStream(){
   if(ws){ try{ws.close();}catch(e){} ws=null; }
+  if(pollTimer){ clearInterval(pollTimer); pollTimer=null; }
   document.getElementById('run-status').innerHTML='<span class="badge b-warn">已停止</span>';
   document.getElementById('btn-start').disabled=false;
   document.getElementById('btn-stop').disabled=true;

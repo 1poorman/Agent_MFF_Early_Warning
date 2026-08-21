@@ -61,6 +61,8 @@ conda run -n mff_agent python -u tests/test_ms3_detection.py
 ```bash
 # 启动服务（RESTful API + Web 界面 + WebSocket 实时流）
 uvicorn server.api:app --host 0.0.0.0 --port 8000
+# 结束服务
+pkill -f "uvicorn server.api"
 
 # 浏览器访问
 #   http://localhost:8000/       四大智能体实时监控界面（单屏）

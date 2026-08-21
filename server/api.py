@@ -218,7 +218,7 @@ async def stream_ws(ws: WebSocket):
         duration = int(req_raw.get("duration", 1800))
 
         from simulator import DataSimulator, FaultSpec, SimConfig
-        faults = [FaultSpec(name=fault, start=fault_start, ramp=600, severity=0.9)] if fault else []
+        faults = [FaultSpec(name=fault, start=fault_start, ramp=300, severity=0.9)] if fault else []
         sim = DataSimulator(config=SimConfig(seed=42), faults=faults)
 
         interval = 1.0 / max(speed, 1.0)
@@ -243,6 +243,13 @@ async def stream_ws(ws: WebSocket):
 @app.get("/api/v1/stream/logs")
 def stream_logs():
     return {"code": 0, "data": svc().get_stream_logs()}
+
+
+@app.post("/api/v1/stream/reset")
+def stream_reset():
+    """重置实时流缓冲与日志（新一次监测）。"""
+    svc().reset_stream()
+    return {"code": 0, "data": {"reset": True}}
 
 
 # ---------------- 四大智能体接口 ----------------

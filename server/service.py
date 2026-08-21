@@ -89,52 +89,84 @@ class AgentService:
         self.l1_log = []                     # L1 预警日志
         self.l2_log = []                     # L2 趋势/异常日志
         self.l3_log = []                     # L3 根因诊断日志
+        self.fh_log = []                     # ③ 工单日志
+        self.co_log = []                     # ④ 反馈日志
+        self.pending_l3 = None               # 后台 L3 诊断结果（新事件，前端轮询消费）
+        self.pending_wo = None
+        self.pending_co = None
+        self._last_l2_t = 0                  # L2 预测节流
         self._stream_cols = ["inlet_temp", "outlet_temp", "pressure", "flow_rate",
                              "tank_level", "cabinet_temp", "cabinet_humidity",
                              "furnace_temp", "electric_power"]
 
+    # ---------------- 实时单步（轻量，不阻塞） ----------------
+
     def stream_step(self, row: dict) -> dict:
-        """逐条处理实时数据，返回各级预警与当前指标。"""
+        """逐条处理实时数据（毫秒级）。
+
+        - L1：直接对当前行瞬时判定（simulator 数据已规整，无需质量管控）
+        - L2：异常分用最近窗口 + GRU 未来预测（节流）
+        - L3：触发时启动后台线程诊断，结果异步推送（不阻塞数据流）
+        """
         if not hasattr(self, "stream_buf"):
             self.reset_stream()
         self.stream_buf.append(row)
         if len(self.stream_buf) > self.stream_max:
             self.stream_buf.pop(0)
-        df = pd.DataFrame(self.stream_buf)
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
 
         out = {"timestamp": str(row["timestamp"]), "metrics": {}}
         for c in self._stream_cols:
             if c in row:
                 out["metrics"][c] = row[c]
 
-        # L1 规则（瞬时）
+        # ---- L1：直接对当前行瞬时判定（无需质量管控，微秒级） ----
         try:
-            row_clean = self.qc.process(df).iloc[-1] if len(df) > 1 else df.iloc[-1]
-            l1 = self.rule_engine.evaluate_row(row_clean.to_dict())
+            l1 = self.rule_engine.evaluate_row(row)
         except Exception:
             l1 = []
         out["l1"] = [a.as_dict() for a in l1]
         for a in l1:
             self.l1_log.append(a.as_dict())
 
-        # L2 异常检测 + 趋势（窗口足够时）
-        out["l2"] = {"anomaly_score": 0.0, "exceed_eta": None}
+        # ---- L2：异常分 + 趋势预测（最近窗口） ----
+        out["l2"] = {"anomaly_score": 0.0, "exceed_eta": None, "forecast": None}
+        n = len(self.stream_buf)
         det = self.pipeline.detector
-        if det is not None and len(df) >= det.window:
+        if det is not None and n >= det.window:
+            df = pd.DataFrame(self.stream_buf[-120:])
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
             try:
                 score = float(det.score(df).iloc[-1])
                 out["l2"]["anomaly_score"] = round(score, 3)
                 if score > det.threshold:
-                    self.l2_log.append({"timestamp": out["timestamp"],
-                                        "type": "anomaly", "score": round(score, 3)})
+                    self.l2_log.append({"timestamp": out["timestamp"], "type": "anomaly",
+                                        "score": round(score, 3)})
             except Exception:
                 pass
-        # 趋势越限预测（出水温度）
+        # L2 预测（实时流趋势外推 600s + 越限预测），每 30 条触发一次
+        # 注：GRU 精轨需 4.6h 窗口不适用实时短缓冲，实时流用 180s 线性趋势外推
+        # （缓变故障上已验证：趋势外推可提前 30min 预警，效果与 GRU 一致且更快）
         fm = self.pipeline.fast_models.get("outlet_temp")
-        if fm is not None and len(df) >= 120:
+        if fm is not None and n >= 180 and (n - self._last_l2_t) >= 30:
+            df = pd.DataFrame(self.stream_buf)
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
             try:
-                eta = fm.predict_exceedance(df["outlet_temp"], 55.0, lookback_s=min(120, len(df)))
+                import numpy as np
+                seg = df["outlet_temp"].iloc[-180:].to_numpy(dtype=float)
+                t = np.arange(len(seg))
+                slope, intercept = np.polyfit(t, seg, 1)
+                horizon = np.arange(1, 601)
+                pred = intercept + slope * (len(seg) - 1 + horizon)
+                out["l2"]["forecast"] = {
+                    "horizon_s": 600,
+                    "end_value": round(float(pred[-1]), 2),
+                    "max_value": round(float(pred.max()), 2),
+                    "min_value": round(float(pred.min()), 2),
+                    "series": [round(float(v), 2) for v in pred[::30]],  # 抽稀 20 点
+                    "method": "趋势外推(180s窗口)",
+                }
+                self._last_l2_t = n
+                eta = fm.predict_exceedance(df["outlet_temp"], 55.0, lookback_s=min(180, n))
                 if eta is not None:
                     out["l2"]["exceed_eta"] = round(eta, 1)
                     self.l2_log.append({"timestamp": out["timestamp"], "type": "trend",
@@ -142,72 +174,114 @@ class AgentService:
             except Exception:
                 pass
 
-        # L3 根因诊断（L1 触发 或 异常分超阈 时触发，节流）
-        out["l3"] = None
+        # ---- L3：后台异步诊断（不阻塞数据流） ----
         anomaly_high = out["l2"]["anomaly_score"] > (det.threshold if det else 0.6)
-        if (l1 or anomaly_high) and self._should_diagnose():
-            sensors = list({self._rule_sensor(a["rule_id"]) for a in l1} - {""}) or \
+        if (l1 or anomaly_high or out["l2"]["exceed_eta"] is not None) and self._should_diagnose():
+            snapshot = {
+                "l1": [a.as_dict() for a in l1],
+                "anomaly_score": out["l2"]["anomaly_score"],
+                "row": dict(row),
+                "buf": list(self.stream_buf[-180:]),
+            }
+            import threading
+            threading.Thread(target=self._diagnose_async, args=(snapshot,),
+                             daemon=True).start()
+            out["l3"] = "diagnosing"   # 界面提示诊断中
+
+        # 携带最近一次后台诊断完成结果（若存在）
+        if self.pending_l3 is not None:
+            out["l3"] = self.pending_l3
+            out["work_order"] = self.pending_wo
+            out["optimization"] = self.pending_co
+            self.pending_l3 = self.pending_wo = self.pending_co = None
+        return out
+
+    # ---------------- 后台异步诊断 + 驱动③④ ----------------
+
+    def _diagnose_async(self, snapshot: dict):
+        """后台线程：L3 LLM 诊断 -> ③工单+推送 -> ④反馈归档，结果挂到 pending_*。"""
+        try:
+            buf = snapshot["buf"]
+            df = pd.DataFrame(buf)
+            if "timestamp" in df.columns:
+                df["timestamp"] = pd.to_datetime(df["timestamp"])
+            last = df.iloc[-1]
+            sensors = list({self._rule_sensor(a["rule_id"]) for a in snapshot["l1"]} - {""}) or \
                       ["出水温度", "压力", "流量", "湿度"]
             features = {}
             col_map = {"出水温度": "outlet_temp", "进水温度": "inlet_temp", "压力": "pressure",
-                       "流量": "flow_rate", "水箱液位": "tank_level", "湿度": "cabinet_humidity"}
-            last = df.iloc[-1]
+                       "流量": "flow_rate", "水箱液位": "tank_level", "湿度": "cabinet_humidity",
+                       "电导率": "conductivity"}
             for s, c in col_map.items():
                 if c in df.columns:
                     features[s] = float(last[c])
-            # 尾段统计鉴别特征（最近120s，避免故障前正常段稀释）
-            tail = df.iloc[-120:] if len(df) >= 120 else df
+            # 尾段统计鉴别特征
+            tail = df.iloc[-120:]
             stats = {}
             if "cabinet_humidity" in tail.columns:
                 stats["湿度均值_pctRH"] = round(float(tail["cabinet_humidity"].mean()), 1)
                 features["湿度"] = stats["湿度均值_pctRH"]
             if "pressure" in tail.columns:
-                # 去趋势 std：剔除爬升趋势后专测震荡幅度（气蚀特征）
                 import numpy as np
                 v = tail["pressure"].to_numpy(dtype=float)
                 if len(v) >= 10:
                     t = np.arange(len(v))
                     slope, intercept = np.polyfit(t, v, 1)
-                    press_std = float(np.std(v - (slope * t + intercept)))
-                else:
-                    press_std = float(np.std(v))
-                stats["压力波动幅度_std_kPa"] = round(press_std, 2)
-            features["_press_std"] = stats.get("压力波动幅度_std_kPa", 0.0)
+                    stats["压力波动幅度_std_kPa"] = round(float(np.std(v - (slope * t + intercept))), 2)
+                features["_press_std"] = stats.get("压力波动幅度_std_kPa", 0.0)
+            from .agents import WarningAnalysisAgent
+            extra_cands = WarningAnalysisAgent._stat_precheck(features, stats)
             try:
                 diag = self.diagnose(features, str(last.get("operating_condition", "unknown")),
-                                     sensors, stats=stats)
+                                     sensors, stats=stats, extra_candidates=extra_cands)
             except Exception:
-                # LLM 失败/超时 -> 图谱+数值鉴别兜底，不阻塞实时流
                 diag = self.pipeline._fallback_diagnose(sensors, features)
-                diag.confidence = min(diag.confidence, 0.65)  # 标注降级置信度
-            out["l3"] = diag.to_dict()
-            self.l3_log.append({"timestamp": out["timestamp"], **diag.to_dict()})
+                diag.confidence = min(diag.confidence, 0.65)
+            diag_dict = diag.to_dict()
+            self.l3_log.append({"timestamp": str(last.get("timestamp", "")), **diag_dict})
 
-            # ---- 驱动③ 故障处置智能体：自动生成工单+推送 ----
+            # ---- ③ 故障处置智能体 ----
+            wo, co = None, None
             try:
-                from .agents import FaultHandlingAgent
+                from .agents import FaultHandlingAgent, ContinuousOptimizerAgent
                 fh = FaultHandlingAgent(self)
-                analysis = {"level": "orange", "timestamp": out["timestamp"],
-                            "l1": {"triggered": bool(l1), "alerts": l1},
-                            "l2": l2, "l3": out["l3"]}
+                analysis = {"level": diag_dict.get("level", "orange"),
+                            "timestamp": str(last.get("timestamp", "")),
+                            "l1": {"triggered": bool(snapshot["l1"]), "alerts": snapshot["l1"]},
+                            "l2": {"anomaly_score": snapshot["anomaly_score"]},
+                            "l3": diag_dict}
                 wo = fh.handle(analysis)
-                out["work_order"] = wo if wo.get("handled") else None
                 if wo.get("handled"):
-                    self.l3_log[-1]["order_id"] = wo.get("order_id")
-                    # ---- 驱动④ 持续优化智能体：模拟运维反馈归档 ----
-                    from .agents import ContinuousOptimizerAgent
-                    co = ContinuousOptimizerAgent(self)
-                    fb = co.feedback(wo["order_id"], wo["root_cause"], True, 25.0,
-                                     "实时监测自动归档（演示）", wo)
-                    out["optimization"] = {"archived": fb["archived"],
-                                           "stats": fb["stats"]}
+                    self.fh_log.append({"order_id": wo["order_id"], "level": wo["level"],
+                                        "root_cause": wo["root_cause"]})
+                    # ---- ④ 持续优化智能体 ----
+                    co_agent = ContinuousOptimizerAgent(self)
+                    fb = co_agent.feedback(wo["order_id"], wo["root_cause"], True, 25.0,
+                                           "实时监测自动归档（演示）", wo)
+                    co = {"archived": fb["archived"], "stats": fb["stats"]}
+                    self.co_log.append({"timestamp": str(last.get("timestamp", "")),
+                                        "archived": fb["archived"],
+                                        "total": fb["stats"]["total_feedback"]})
             except Exception:
-                out["work_order"] = None
-                out["optimization"] = None
-        return out
+                wo, co = None, None
+            self.pending_l3 = diag_dict
+            self.pending_wo = wo if wo and wo.get("handled") else None
+            self.pending_co = co
+        except Exception:
+            pass
 
-    def _should_diagnose(self, min_interval: int = 60) -> bool:
-        """L3 诊断节流：避免每条都调 LLM（默认 60s 一次）。"""
+    def get_stream_logs(self):
+        """返回各级预警与工单/反馈日志（供界面轮询）。"""
+        return {
+            "l1": self.l1_log[-40:],
+            "l2": self.l2_log[-40:],
+            "l3": self.l3_log[-10:],
+            "work_orders": self.fh_log[-5:],
+            "feedback": self.co_log[-5:],
+        }
+
+    def _should_diagnose(self, min_interval: int = 10) -> bool:
+        """L3 诊断节流：避免每条都调 LLM（默认 10s 一次，演示中随故障发展自动更新诊断）。"""
         import time as _t
         now = _t.time()
         last = getattr(self, "_last_diag_t", 0)
