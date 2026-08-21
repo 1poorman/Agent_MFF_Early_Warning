@@ -218,11 +218,25 @@ async def stream_ws(ws: WebSocket):
         duration = int(req_raw.get("duration", 1800))
 
         from simulator import DataSimulator, FaultSpec, SimConfig
-        faults = [FaultSpec(name=fault, start=fault_start, ramp=300, severity=0.9)] if fault else []
+        # 预加载量 = GRU 快轨窗口（16800s=4.6h），保证 L2 用真实 GRU 预测；
+        # 故障起始相对实时流起点偏移（fault_start 由前端传入）
+        warmup_s = s.pipeline.fast_models["outlet_temp"].window \
+            if "outlet_temp" in s.pipeline.fast_models else 16800
+        faults = [FaultSpec(name=fault, start=warmup_s + fault_start, ramp=300, severity=0.9)] \
+            if fault else []
         sim = DataSimulator(config=SimConfig(seed=42), faults=faults)
 
-        interval = 1.0 / max(speed, 1.0)
         loop = asyncio.get_event_loop()
+        # ---- 预加载阶段：填充缓冲不推送，界面提示 ----
+        await ws.send_json({"preload": True, "points": warmup_s})
+        for _ in range(warmup_s):
+            row = sim._sense(sim.step())
+            row["timestamp"] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+            s.preload_row(row)
+        await ws.send_json({"preload_done": True, "points": s.preloaded})
+
+        # ---- 实时推送阶段 ----
+        interval = 1.0 / max(speed, 1.0)
         for _ in range(duration):
             row = sim._sense(sim.step())   # 带测量噪声的传感器读数
             row["timestamp"] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")

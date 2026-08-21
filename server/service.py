@@ -82,9 +82,9 @@ class AgentService:
 
     # ---------------- 流式实时处理 ----------------
 
-    def reset_stream(self, max_points: int = 600):
-        """重置实时流缓冲。"""
-        self.stream_buf = []                 # 最近 max_points 条原始记录
+    def reset_stream(self, max_points: int = 20000):
+        """重置实时流缓冲（支持预加载 GRU 所需 4.6h=16800 点）。"""
+        self.stream_buf = []                 # 预加载 + 实时数据（含 GRU 窗口）
         self.stream_max = max_points
         self.l1_log = []                     # L1 预警日志
         self.l2_log = []                     # L2 趋势/异常日志
@@ -95,9 +95,28 @@ class AgentService:
         self.pending_wo = None
         self.pending_co = None
         self._last_l2_t = 0                  # L2 预测节流
+        self.l3_finalized = False            # L3 唯一性：首诊完成后不再重复诊断
+        self.wo_issued = False               # 工单唯一性：同一故障场景只发一张
+        self.preloaded = 0                   # 已预加载数据条数
         self._stream_cols = ["inlet_temp", "outlet_temp", "pressure", "flow_rate",
                              "tank_level", "cabinet_temp", "cabinet_humidity",
                              "furnace_temp", "electric_power"]
+
+    # ---------------- 预加载（不推送、不分析，仅填充缓冲） ----------------
+
+    def preload_row(self, row: dict):
+        """预加载历史数据到缓冲（不触发 L1/L2/L3 分析，供 GRU 窗口与上下文）。"""
+        if not hasattr(self, "stream_buf"):
+            self.reset_stream()
+        self.stream_buf.append(row)
+        self.preloaded += 1
+        if len(self.stream_buf) > self.stream_max:
+            self.stream_buf.pop(0)
+
+    def gru_ready(self) -> bool:
+        """GRU 模型可用所需的最小预加载量（快轨窗口）。"""
+        fm = self.pipeline.fast_models.get("outlet_temp")
+        return fm is not None and len(self.stream_buf) >= fm.window
 
     # ---------------- 实时单步（轻量，不阻塞） ----------------
 
@@ -105,8 +124,8 @@ class AgentService:
         """逐条处理实时数据（毫秒级）。
 
         - L1：直接对当前行瞬时判定（simulator 数据已规整，无需质量管控）
-        - L2：异常分用最近窗口 + GRU 未来预测（节流）
-        - L3：触发时启动后台线程诊断，结果异步推送（不阻塞数据流）
+        - L2：异常分（最近窗口） + 真实 GRU 未来预测（预加载完成后可用）
+        - L3：触发时启动后台线程诊断（唯一性），结果异步推送（不阻塞数据流）
         """
         if not hasattr(self, "stream_buf"):
             self.reset_stream()
@@ -114,7 +133,8 @@ class AgentService:
         if len(self.stream_buf) > self.stream_max:
             self.stream_buf.pop(0)
 
-        out = {"timestamp": str(row["timestamp"]), "metrics": {}}
+        out = {"timestamp": str(row["timestamp"]), "metrics": {},
+               "preloaded": self.preloaded}
         for c in self._stream_cols:
             if c in row:
                 out["metrics"][c] = row[c]
@@ -128,7 +148,7 @@ class AgentService:
         for a in l1:
             self.l1_log.append(a.as_dict())
 
-        # ---- L2：异常分 + 趋势预测（最近窗口） ----
+        # ---- L2：异常分 + GRU 预测（预加载完成后） ----
         out["l2"] = {"anomaly_score": 0.0, "exceed_eta": None, "forecast": None}
         n = len(self.stream_buf)
         det = self.pipeline.detector
@@ -143,45 +163,44 @@ class AgentService:
                                         "score": round(score, 3)})
             except Exception:
                 pass
-        # L2 预测（实时流趋势外推 600s + 越限预测），每 30 条触发一次
-        # 注：GRU 精轨需 4.6h 窗口不适用实时短缓冲，实时流用 180s 线性趋势外推
-        # （缓变故障上已验证：趋势外推可提前 30min 预警，效果与 GRU 一致且更快）
+
+        # L2 预测：真实 GRU 模型（预加载窗口足够时），每 60 条触发一次
         fm = self.pipeline.fast_models.get("outlet_temp")
-        if fm is not None and n >= 180 and (n - self._last_l2_t) >= 30:
+        if fm is not None and n >= fm.window and (n - self._last_l2_t) >= 60:
             df = pd.DataFrame(self.stream_buf)
             df["timestamp"] = pd.to_datetime(df["timestamp"])
             try:
-                import numpy as np
-                seg = df["outlet_temp"].iloc[-180:].to_numpy(dtype=float)
-                t = np.arange(len(seg))
-                slope, intercept = np.polyfit(t, seg, 1)
-                horizon = np.arange(1, 601)
-                pred = intercept + slope * (len(seg) - 1 + horizon)
+                pred = fm.predict(df["outlet_temp"].iloc[-fm.window:])  # 未来 600s
                 out["l2"]["forecast"] = {
                     "horizon_s": 600,
                     "end_value": round(float(pred[-1]), 2),
                     "max_value": round(float(pred.max()), 2),
                     "min_value": round(float(pred.min()), 2),
                     "series": [round(float(v), 2) for v in pred[::30]],  # 抽稀 20 点
-                    "method": "趋势外推(180s窗口)",
+                    "method": "GRU+attention(残差学习)",
                 }
                 self._last_l2_t = n
-                eta = fm.predict_exceedance(df["outlet_temp"], 55.0, lookback_s=min(180, n))
+                eta = fm.predict_exceedance(df["outlet_temp"], 55.0, lookback_s=min(600, n))
                 if eta is not None:
                     out["l2"]["exceed_eta"] = round(eta, 1)
                     self.l2_log.append({"timestamp": out["timestamp"], "type": "trend",
-                                        "msg": f"预测出水温度 {eta/60:.1f}min 后越限 55℃"})
+                                        "msg": f"GRU预测出水温度 {eta/60:.1f}min 后越限 55℃"})
             except Exception:
                 pass
 
-        # ---- L3：后台异步诊断（不阻塞数据流） ----
+        # ---- L3：后台异步诊断（唯一性：首诊完成后不再重复） ----
+        # 门槛：实时段(预加载后) ≥600 条 且 有"故障信号"，避免预加载边界处正常数据误触发
+        #  故障信号 = L2 异常分超阈 / L1 泄漏·流量·压力·温度规则 / GRU 越限预测
+        realtime_n = n - self.preloaded
         anomaly_high = out["l2"]["anomaly_score"] > (det.threshold if det else 0.6)
-        if (l1 or anomaly_high or out["l2"]["exceed_eta"] is not None) and self._should_diagnose():
+        fault_signal = bool(l1) or anomaly_high or out["l2"]["exceed_eta"] is not None
+        if fault_signal and realtime_n >= 600 \
+                and not self.l3_finalized and self._should_diagnose():
             snapshot = {
                 "l1": [a.as_dict() for a in l1],
                 "anomaly_score": out["l2"]["anomaly_score"],
                 "row": dict(row),
-                "buf": list(self.stream_buf[-180:]),
+                "buf": list(self.stream_buf[-600:]),
             }
             import threading
             threading.Thread(target=self._diagnose_async, args=(snapshot,),
@@ -245,11 +264,18 @@ class AgentService:
                 diag = self.pipeline._fallback_diagnose(sensors, features)
                 diag.confidence = min(diag.confidence, 0.65)
             diag_dict = diag.to_dict()
+            # 线程安全：置唯一标志，防止并发重复诊断/重复工单
+            self.l3_finalized = True
             self.l3_log.append({"timestamp": str(last.get("timestamp", "")), **diag_dict})
 
-            # ---- ③ 故障处置智能体 ----
+            # ---- ③ 故障处置智能体（工单唯一：同一故障场景只生成一次） ----
             wo, co = None, None
             try:
+                if self.wo_issued:
+                    # 已有工单：不再重复生成/推送，仅同步诊断结果
+                    self.pending_l3 = diag_dict
+                    self.pending_wo = self.pending_co = None
+                    return
                 from .agents import FaultHandlingAgent, ContinuousOptimizerAgent
                 fh = FaultHandlingAgent(self)
                 analysis = {"level": diag_dict.get("level", "orange"),
@@ -259,6 +285,7 @@ class AgentService:
                             "l3": diag_dict}
                 wo = fh.handle(analysis)
                 if wo.get("handled"):
+                    self.wo_issued = True      # 工单已发，禁止重复
                     self.fh_log.append({"order_id": wo["order_id"], "level": wo["level"],
                                         "root_cause": wo["root_cause"]})
                     # ---- ④ 持续优化智能体 ----

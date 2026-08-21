@@ -361,7 +361,7 @@ async function resetStream(){
   document.getElementById('l2-cnt').textContent='0';
   document.getElementById('l3-cnt').textContent='0';
   document.getElementById('anomaly-score').textContent='0.00';
-  document.getElementById('forecast-msg').textContent='等待数据≥2min...';
+  document.getElementById('forecast-msg').textContent='等待预加载...';
   document.getElementById('trend-msg').textContent='';
   document.getElementById('pt-count2').textContent='0';
 }
@@ -385,6 +385,16 @@ function startStream(){
       const d = JSON.parse(e.data);
       if(d.done){ stopStream(); return; }
       if(d.error){ console.error(d.error); return; }
+      if(d.preload){                       // 预加载阶段
+        document.getElementById('forecast-msg').innerHTML = `⏳ 预加载历史数据 ${d.points} 点（GRU 窗口）...`;
+        document.getElementById('forecast-msg').style.color='#ffae42';
+        return;
+      }
+      if(d.preload_done){                  // 预加载完成，启动实时分析
+        document.getElementById('forecast-msg').innerHTML = `✔ 预加载完成 ${d.points} 点，开始实时分析（GRU 就绪）`;
+        document.getElementById('forecast-msg').style.color='#5ee08a';
+        return;
+      }
       pushPoint(d);
       renderL1(d.l1); renderL2(d.l2); renderL3(d.l3);
       renderFH(d.work_order); renderCO(d.optimization);
