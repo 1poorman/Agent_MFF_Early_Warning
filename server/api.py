@@ -2,6 +2,7 @@
 
 启动：
     uvicorn server.api:app --host 0.0.0.0 --port 8000
+    # 或：python -m server.api（host/port 从 config/settings.yaml 读取）
 文档：
     http://localhost:8000/docs  (Swagger UI)
 界面：
@@ -19,18 +20,24 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from config import get_logger, get_settings, setup_logging
+
 from .service import AgentService
 from .agents import (
     DataManagementAgent, WarningAnalysisAgent,
     FaultHandlingAgent, ContinuousOptimizerAgent,
 )
 
+setup_logging()
+cfg = get_settings()
+logger = get_logger("server.api")
+
 ROOT = Path(__file__).resolve().parent.parent
 STATIC = ROOT / "server" / "static"
 
 app = FastAPI(
-    title="中频炉水冷系统预警智能体 API",
-    version="1.0.0",
+    title=cfg.app.title,
+    version=cfg.app.version,
     description="多级预警 + 根因诊断 + 工单闭环",
 )
 
@@ -210,12 +217,15 @@ async def stream_ws(ws: WebSocket):
     await ws.accept()
     s = svc()
     s.reset_stream()
+    logger.info("WebSocket 实时流接入 | client=%s", ws.client.host if ws.client else "unknown")
     try:
         req_raw = await ws.receive_json()
         fault = req_raw.get("fault")
         fault_start = int(req_raw.get("fault_start", 120))
         speed = float(req_raw.get("speed", 20.0))
         duration = int(req_raw.get("duration", 1800))
+        logger.info("实时流参数 | fault=%s fault_start=%d speed=%.1f duration=%d",
+                    fault, fault_start, speed, duration)
 
         from simulator import DataSimulator, FaultSpec, SimConfig
         # 预加载量 = GRU 快轨窗口（16800s=4.6h），保证 L2 用真实 GRU 预测；
@@ -248,9 +258,11 @@ async def stream_ws(ws: WebSocket):
             await ws.send_json(out)
             await asyncio.sleep(interval)
         await ws.send_json({"done": True})
+        logger.info("实时流完成 | 推送 %d 条", duration)
     except WebSocketDisconnect:
-        pass
+        logger.info("实时流客户端断开 | client=%s", ws.client.host if ws.client else "unknown")
     except Exception as e:
+        logger.exception("实时流异常: %s", e)
         try:
             await ws.send_json({"error": str(e)})
         except Exception:
@@ -486,6 +498,10 @@ def workflow_run(req: WorkflowRunRequest):
         trace.append({"agent": "optimizer", "latency_ms": round((time.perf_counter() - t0) * 1000, 1),
                       "archived": co["archived"]})
 
+    total_latency_ms = round(sum(t["latency_ms"] for t in trace), 1)
+    logger.info("编排工作流执行完成 | fault=%s duration=%d 预警级别=%s 工单=%s 总时延=%.1fms",
+                req.fault, req.duration, wa["level"],
+                fh.get("order_id") if fh.get("handled") else "无", total_latency_ms)
     return {"code": 0, "data": {
         "workflow": "数据管理 -> 预警分析 -> 故障处置 -> 持续优化",
         "fault_injected": req.fault,
@@ -493,7 +509,7 @@ def workflow_run(req: WorkflowRunRequest):
         "work_order": fh,
         "optimization": co,
         "trace": trace,
-        "total_latency_ms": round(sum(t["latency_ms"] for t in trace), 1),
+        "total_latency_ms": total_latency_ms,
     }}
 
 
@@ -505,3 +521,12 @@ def index():
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    c = get_settings()
+    logger.info("启动 %s v%s | host=%s port=%d env=%s",
+                c.app.title, c.app.version, c.app.host, c.app.port, c.app.env)
+    uvicorn.run("server.api:app", host=c.app.host, port=c.app.port, reload=c.app.debug)

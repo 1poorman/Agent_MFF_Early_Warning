@@ -1,0 +1,38 @@
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.venv/
+
+# VCS
+.git/
+.gitignore
+
+# 日志（保留目录占位）
+logs/*
+!logs/.gitkeep
+
+# 数据 / 模型（通过 volume 挂载）
+data/simulated/*
+data/feedback/*
+models/*.pt
+models/*.pkl
+
+# 第三方源码目录 / 文档 / 测试
+Anomaly_ts/
+Anomaly-Transformer/
+timesfm/
+docs/
+design/
+tests/
+scripts/
+
+# 其他
+*.docx
+*.log
+Dockerfile
+docker-compose.yml
+.dockerignore

@@ -95,6 +95,28 @@ curl -s -X POST http://localhost:8000/api/v1/workflow/run \
 返回全链路结果：预警级别 → L3 根因（置信度/证据/防幻觉校验）→ 工单+推送 → 反馈归档，
 含各智能体环节耗时 trace（端到端约 5s，其中 LLM 推理 3~5s）。
 
+### 2.4 Docker 一键部署（可选，基于 conda 环境 mff_agent）
+
+```bash
+# 1. 构建并启动（PostgreSQL + API + MCP 三个服务）
+docker compose up -d --build
+
+# 2. 访问
+#   http://localhost:8000/       四智能体监控界面
+#   http://localhost:8000/docs   Swagger API 文档
+#   MCP Server: http://localhost:8100
+
+# 3. 常用命令
+docker compose logs -f api      # 查看 API 运行日志
+docker compose ps               # 服务状态
+docker compose down             # 停止（保留数据卷）
+```
+
+- 镜像基于 `continuumio/miniconda3`，内部创建与本地一致的 `mff_agent` conda 环境（Python 3.10）
+- 大模型配置通过只读挂载项目根 `.env` 自动注入；`config/settings.yaml` 同样只读挂载，改后重启生效
+- 模型权重 `models/` 只读挂载、`data/` 与 `logs/` 读写挂载，不随镜像分发
+- 默认 CPU 版 PyTorch；如需 CUDA：`docker build --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu130 -t mff-agent:latest .`
+
 ## 三、四大智能体与 API
 
 | 智能体 | 职责 | RESTful | MCP 工具 |
@@ -196,6 +218,7 @@ python -c "from storage import TimeSeriesDB; print(TimeSeriesDB().stats())"  # �
 ## 五、目录结构
 
 ```
+config/        集中参数设置（settings.yaml）+ 统一日志配置
 simulator/     物理机理数据仿真（含 4 类故障注入）
 perception/    数据接入与质量管控
 detection/     L1 规则引擎 / L2 快轨+精轨+异常检测 / 模型路由
@@ -208,7 +231,43 @@ server/        四大智能体 + RESTful API + MCP Server + Web 界面
 storage/       时序数据存储（本地 PostgreSQL 月度分区表，自动建分区）
 design/        蓝图 / 里程碑 / 测试报告 / 接口文档
 tests/         42 项验收测试（全部通过）
+logs/          运行日志（app.log / error.log，自动滚动）
 ```
+
+## 七、集中配置与日志
+
+### 7.1 集中参数设置（config/）
+
+所有运行参数统一集中在 `config/settings.yaml`，启动时由 `config` 包加载为类型化配置对象：
+
+```python
+from config import get_settings
+cfg = get_settings()
+cfg.app.port            # 服务端口
+cfg.database.dsn        # 时序库连接串
+cfg.rules               # L1 规则阈值
+cfg.simulator           # 仿真器参数
+```
+
+**覆盖优先级（低 → 高）**：
+1. `config/settings.yaml` 默认值
+2. 项目根 `.env`（`url` / `key` / `big_model_name` 等 llm 段自动合并）
+3. 环境变量 `MFF_<段>_<键>`（如 `MFF_APP_PORT=8080`、`MFF_DATABASE_DSN=...`）
+
+各模块提供 `from_settings()` 便捷构造（`SimConfig`、`RuleThresholds`、`DBConfig`、`QualityController`），
+服务层 `AgentService` 已全部改为从集中配置读取。
+
+### 7.2 运行日志（config/logging_config.py）
+
+应用启动时自动初始化，控制台 + 文件双输出：
+
+```bash
+logs/app.log       # 全量运行日志（10MB 滚动 ×10）
+logs/error.log     # ERROR 及以上错误日志
+```
+
+关键日志埋点：服务初始化、实时流接入/断开、L1/L2/L3 预警触发、根因诊断结果、工单生成、编排工作流执行。
+自定义日志级别/目录见 `config/settings.yaml` 的 `logging` 段，或环境变量 `MFF_LOGGING_LEVEL=DEBUG`。
 
 ## 六、测试与验证
 
@@ -234,7 +293,7 @@ python tests/test_ms6_workflow.py     # 工作流集成（4 项）
 | 端到端时延 | <3s | **75ms**（兜底）/ **~5s**（含 LLM） |
 | 特征过滤效率 | ≥90% | **98%** |
 
-## 七、文档
+## 八、文档
 
 | 文档 | 说明 |
 |---|---|

@@ -1,0 +1,89 @@
+# ============================================================================
+# 中频炉预警智能体 —— docker compose 一键启动
+# ----------------------------------------------------------------------------
+# 服务：
+#   postgres  时序数据库（PostgreSQL 16，月度分区自动建表）
+#   api       RESTful API + Web 界面（uvicorn，端口 8000）
+#   mcp       MCP Server（streamable-http，端口 8100）
+#
+# 启动：
+#   docker compose up -d --build
+# 查看日志：
+#   docker compose logs -f api
+# 停止：
+#   docker compose down
+#
+# 说明：
+#   - 大模型配置通过挂载项目根 .env（url/key/big_model_name，key: value 风格）
+#     自动注入容器，与本地运行行为一致；
+#   - config/settings.yaml 只读挂载，可在宿主机直接改配置后重启生效；
+#   - 模型权重 models/ 只读挂载（预训练权重较大，不打入镜像）。
+# ============================================================================
+
+name: mff-agent
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: mff-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: mff_tsdb
+      TZ: Asia/Shanghai
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d mff_tsdb"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    image: mff-agent:latest
+    container_name: mff-api
+    restart: unless-stopped
+    command: ["uvicorn", "server.api:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    environment:
+      MFF_APP_ENV: prod
+      # 覆盖 yaml 中 database.dsn，指向 compose 的 postgres 服务
+      MFF_DATABASE_DSN: postgresql://postgres:postgres@postgres:5432/mff_tsdb
+    volumes:
+      - ./models:/app/models:ro
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./.env:/app/.env:ro
+      - ./config/settings.yaml:/app/config/settings.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  mcp:
+    build: .
+    image: mff-agent:latest
+    container_name: mff-mcp
+    restart: unless-stopped
+    command: ["python", "-m", "server.mcp_server", "--transport", "streamable-http", "--port", "8100"]
+    ports:
+      - "8100:8100"
+    environment:
+      MFF_APP_ENV: prod
+      MFF_DATABASE_DSN: postgresql://postgres:postgres@postgres:5432/mff_tsdb
+    volumes:
+      - ./models:/app/models:ro
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./.env:/app/.env:ro
+      - ./config/settings.yaml:/app/config/settings.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:

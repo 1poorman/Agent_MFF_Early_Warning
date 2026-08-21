@@ -33,6 +33,13 @@ class DBConfig:
     pool_min: int = 1
     pool_max: int = 5
 
+    @classmethod
+    def from_settings(cls) -> "DBConfig":
+        """从集中配置（config/settings.yaml database 段）构造。"""
+        from config import get_settings
+        db = get_settings().database
+        return cls(dsn=db.dsn, pool_min=db.pool_min, pool_max=db.pool_max)
+
 
 class TimeSeriesDB:
     """中频炉时序数据存储读写。"""

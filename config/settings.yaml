@@ -1,0 +1,168 @@
+# ============================================================================
+# 中频炉水冷系统多参数融合预警智能体 —— 集中配置文件
+# ----------------------------------------------------------------------------
+# 用法：
+#   1. 本文件为全部运行参数的唯一集中入口，修改后重启服务生效；
+#   2. 敏感信息（大模型 key 等）建议不写在此文件，通过项目根 .env 或
+#      环境变量 MFF_LLM_KEY=xxx 覆盖（见 README）；
+#   3. 环境变量覆盖规则：MFF_<段名>_<键名>（如 MFF_APP_PORT=8080）。
+# ============================================================================
+
+# ---------------- 应用 / 服务 ----------------
+app:
+  name: mff-early-warning
+  title: 中频炉水冷系统多参数融合预警智能体
+  version: 1.0.0
+  env: dev                       # dev / prod
+  host: 0.0.0.0
+  port: 8000                     # RESTful API + Web 界面端口
+  debug: false
+
+# ---------------- MCP Server ----------------
+mcp:
+  host: 0.0.0.0
+  port: 8100                     # streamable-http 传输端口
+  transport: streamable-http     # stdio / sse / streamable-http
+
+# ---------------- 日志 ----------------
+logging:
+  level: INFO                    # DEBUG / INFO / WARNING / ERROR
+  dir: logs                      # 日志目录（相对项目根）
+  file: app.log                  # 运行日志文件
+  error_file: error.log          # 错误日志文件（ERROR 及以上）
+  max_bytes: 10485760            # 单文件 10MB 滚动
+  backup_count: 10               # 保留滚动份数
+  format: "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+
+# ---------------- 大模型（LLM）----------------
+# url/key 通常由项目根 .env 提供（key: value 风格），此处留空则由 .env 覆盖；
+# 也可用环境变量 MFF_LLM_URL / MFF_LLM_KEY 覆盖。
+llm:
+  url: ""                        # <LLM 服务地址>/v1
+  key: ""                        # API KEY（敏感，建议 .env/环境变量）
+  big_model_name: Qwen3.6-27B-INT4
+  small_model_name: qwen3-14b-local
+  api_key: empty
+  base_url: ""                   # 小模型底座（可选）
+  enable_thinking: false         # 关闭思考模式加速推理
+  timeout: 60.0                  # 推理超时（秒）
+  max_tokens: 1500
+  temperature: 0.2
+
+# ---------------- 时序数据库（PostgreSQL）----------------
+database:
+  dsn: postgresql://postgres:postgres@localhost:5432/mff_tsdb
+  pool_min: 1
+  pool_max: 5
+
+# ---------------- 物理机理数据仿真器 ----------------
+simulator:
+  dt: 1.0                        # 采样步长（秒）
+  seed: 42                       # 随机种子（可复现）
+  start_time: "2026-08-20 00:00:00"
+  # 炉体热模型
+  furnace_heat_capacity: 4200.0  # 有效热容 C (kJ/K)
+  furnace_eta: 0.72              # 电-热转换效率
+  furnace_loss_coef: 0.12        # 炉体表面散热系数 h (kW/K)
+  ambient_temp: 30.0             # 环境温度 (℃)
+  rated_power: 3000.0            # 额定功率 (kW)
+  power_band: 50.0               # 功率比例调节带宽 (K)
+  # 电气参数（P = √3·U·I·cosφ）
+  line_voltage: 1000.0           # 线电压 (V)
+  power_factor: 0.92             # 功率因数
+  # 水冷系统水力模型
+  pump_head: 0.30                # 水泵出口扬程对应压力 (MPa)
+  static_pressure: 0.12          # 管网静压 (MPa)
+  coil_resistance: 0.0022        # 线圈管路阻抗 R (MPa/(L/s)^2)
+  filter_resistance: 0.0006      # 过滤器洁净时阻抗 (MPa/(L/s)^2)
+  flow_tau: 8.0                  # 流量一阶惯性时间常数 (s)
+  pipe_area: 0.003318            # 管道截面积 (m^2)，DN65
+  rated_flow: 8.0                # 额定流量 (L/s)
+  max_delta_t: 60.0              # 断流保护：进出水温差上限 (℃)
+  # 冷却水热模型
+  inlet_temp_base: 28.0          # 进水温度基线 (℃)
+  inlet_temp_drift: 2.0          # 进水温度昼夜波动幅值 (℃)
+  coil_loss_frac: 0.08           # 电功率进入冷却水的比例
+  furnace_water_coef: 0.10       # 炉体向冷却水传热系数 (kW/K)
+  water_cp: 4.186                # 水的比热容 (kJ/(kg·K))
+  # 水箱
+  tank_area: 4.0                 # 水箱截面积 (m^2)
+  tank_level_init: 2.0           # 初始液位 (m)
+  tank_level_low: 1.9            # 补水阀开启液位 (m)
+  tank_level_high: 2.1           # 补水阀关闭液位 (m)
+  refill_rate: 8.0               # 补水量 (L/s)
+  # 水质 / 电气柜
+  conductivity_init: 550.0       # 初始电导率 (µS/cm)
+  conductivity_drift: 0.5        # 自然漂移 (µS/cm 每小时)
+  cabinet_temp_coef: 0.004       # 电气柜温升系数 (K/kW)
+  humidity_base: 50.0            # 湿度基线 (%RH)
+  humidity_daily_amp: 8.0        # 湿度昼夜波动 (%RH)
+
+# ---------------- L1 规则引擎阈值 ----------------
+rules:
+  outlet_temp_high: 55.0         # ℃
+  inlet_temp_high_base: 35.0     # ℃（季节修正基线）
+  delta_t_high: 25.0             # ℃
+  pressure_low_kpa: 150.0        # kPa
+  pressure_high_kpa: 300.0       # kPa
+  flow_low_ratio: 0.8            # 额定流量比例
+  flow_high_ratio: 1.2
+  rated_flow_lps: 8.0
+  conductivity_high: 800.0       # µS/cm
+  dew_margin_warn_c: 3.0         # 凝露裕度 ℃
+  heat_rate_drift: 0.15          # 单位电耗温升率漂移 15%
+  pq_offset_limit: 0.10          # P-Q 特性偏移 10%
+
+# ---------------- L2 检测 / 实时流 ----------------
+detection:
+  fast_window: 3600              # GRU 快轨输入窗口（秒）
+  fast_horizon: 600              # GRU 预测步长（秒，≤10min）
+  fast_period: 8400              # 工况循环周期（秒）
+  fast_downsample: 10            # GRU 输入降采样倍率
+  fast_hidden: 32                # GRU 隐层维度
+  anomaly_window: 60             # VAE+IF 异常检测窗口（秒）
+  anomaly_threshold: 0.6         # 异常分阈值
+  anomaly_vae_weight: 0.5        # VAE 融合权重
+  anomaly_latent: 8              # VAE 隐变量维度
+  stream_l2_interval: 60         # L2 预测节流（条）
+  stream_l3_min_realtime: 600    # L3 触发所需实时段最小条数
+  forecast_threshold: 55.0       # 出水温度越限预测阈值 (℃)
+  forecast_horizon: 600          # 越限预测水平（秒）
+  exceed_lookback: 600           # 越限预测回看（秒）
+
+# ---------------- 数据质量管控 ----------------
+quality:
+  hampel_window_s: 121           # Hampel 滤波窗口（秒）
+  hampel_n_sigma: 5.0            # Hampel 阈值（倍 MAD）
+  max_rate_per_s:
+    inlet_temp: 0.5
+    outlet_temp: 0.5
+    pressure: 50.0               # kPa/s（保留气蚀真实震荡，尖刺由 Hampel 拦截）
+    flow_rate: 0.5
+    flow_velocity: 0.2
+    tank_level: 5.0
+    conductivity: 10.0
+    cabinet_temp: 15.0
+    cabinet_humidity: 2.0
+    furnace_temp: 20.0
+    electric_power: 3100.0
+    electric_current: 2000.0
+  physical_bounds:
+    inlet_temp: [0.0, 60.0]
+    outlet_temp: [0.0, 100.0]
+    pressure: [0.0, 600.0]       # kPa
+    flow_rate: [0.0, 20.0]       # L/s
+    flow_velocity: [0.0, 10.0]   # m/s
+    tank_level: [0.0, 400.0]     # cm
+    conductivity: [0.0, 2000.0]  # µS/cm
+    cabinet_temp: [0.0, 90.0]
+    cabinet_humidity: [0.0, 100.0]
+    furnace_temp: [0.0, 2000.0]
+    electric_power: [0.0, 5000.0]   # kW
+    electric_current: [0.0, 5000.0] # A
+
+# ---------------- 路径 ----------------
+paths:
+  models_dir: models             # 时序模型权重目录
+  data_dir: data                 # 数据目录
+  feedback_file: data/feedback/service.jsonl   # 反馈归档文件

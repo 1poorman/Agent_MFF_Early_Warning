@@ -1,6 +1,9 @@
 """大模型接入抽象（OpenAI 兼容接口，可切换底座）。
 
-从 .env 读取配置（YAML 风格 key: value）。
+配置来源（优先级从高到低）：
+    1. 显式传入的 config dict
+    2. 集中配置 config/settings.yaml 的 llm 段（可被 .env / 环境变量覆盖）
+    3. 项目根 .env（YAML 风格 key: value，向后兼容）
 优先使用 big_model（Qwen3.6-27B）做根因推理；推理模型的思考链在 reasoning 字段。
 """
 
@@ -24,12 +27,24 @@ def load_env_config(path: str = ".env") -> dict:
     return cfg
 
 
+def _load_central_or_env() -> dict:
+    """优先集中配置（config 已合并 .env），无 url 时回退 .env。"""
+    try:
+        from config import get_settings
+        s = get_settings()
+        if s.llm.url:
+            return s.llm.to_client_dict()
+    except Exception:
+        pass
+    return load_env_config()
+
+
 class LLMClient:
     """大模型客户端。"""
 
     def __init__(self, config: Optional[dict] = None, prefer: str = "big",
                  timeout: float = 60.0, enable_thinking: bool = False):
-        cfg = config or load_env_config()
+        cfg = config or _load_central_or_env()
         self.enable_thinking = enable_thinking
         if prefer == "big" and cfg.get("url"):
             base = cfg["url"]

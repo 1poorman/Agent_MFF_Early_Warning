@@ -1,6 +1,7 @@
 """共享服务层：加载模型、上下文、工作流，供 API 与 MCP 复用。
 
 单例模式，进程启动时初始化一次（模型加载较重）。
+所有运行参数统一从 config/settings.yaml 集中读取（可被 .env / 环境变量覆盖）。
 """
 
 import threading
@@ -10,6 +11,7 @@ from typing import Dict, Optional
 import pandas as pd
 
 from action import EmergencyPlanner, Feedback, FeedbackStore, Notifier, WorkOrderGenerator
+from config import get_logger, get_settings
 from context import default_maintenance_log, default_operating_schedule
 from detection import RuleEngine
 from detection.fast_anomaly import FastAnomalyDetector
@@ -20,8 +22,9 @@ from storage import TimeSeriesDB
 from tools.dew_point import CondensationPredictor, dew_point_margin
 from workflow import EarlyWarningPipeline
 
+logger = get_logger("server.service")
+
 ROOT = Path(__file__).resolve().parent.parent
-MODELS = ROOT / "models"
 FAST_COLS = ["outlet_temp", "flow_rate", "pressure"]
 
 
@@ -32,48 +35,55 @@ class AgentService:
     _lock = threading.Lock()
 
     def __init__(self, use_llm: bool = True):
+        self.cfg = get_settings()
         self.pipeline = self._build_pipeline(use_llm)
         self.ingestor = DataIngestor()
-        self.qc = QualityController()
-        self.rule_engine = RuleEngine()
+        self.qc = QualityController.from_settings()
+        self.rule_engine = RuleEngine(self.cfg.to_rule_thresholds())
         self.maint = default_maintenance_log()
         self.sched = default_operating_schedule()
         self.wo_gen = WorkOrderGenerator()
         self.notifier = Notifier()
         self.emergency = EmergencyPlanner()
-        self.feedback_store = FeedbackStore(str(ROOT / "data" / "feedback" / "service.jsonl"))
+        self.feedback_store = FeedbackStore(str(self.cfg.paths.feedback))
         self.use_llm = use_llm
         # 实时数据缓存（供界面展示）
         self.latest_window: Optional[pd.DataFrame] = None
         self.latest_result = None
         # 电气柜凝露预测器（露点计算 + 缓变趋势外推）
-        self.dew = CondensationPredictor(margin_warn_c=3.0, window_s=600, horizon_s=600)
+        self.dew = CondensationPredictor(
+            margin_warn_c=self.cfg.rules.dew_margin_warn_c, window_s=600, horizon_s=600)
         # 时序数据库（本地 PostgreSQL 分区表；失败不影响 Demo）
         try:
-            self.tsdb = TimeSeriesDB()
+            self.tsdb = TimeSeriesDB(self.cfg.to_db_config())
             self.tsdb_ok = True
         except Exception as e:
             self.tsdb_ok = False
-            print(f"[warn] 时序数据库不可用: {e}")
+            logger.warning("时序数据库不可用: %s", e)
+        logger.info("服务初始化完成 | use_llm=%s fast_models=%s anomaly=%s tsdb=%s",
+                    use_llm, list(self.pipeline.fast_models.keys()),
+                    self.pipeline.detector is not None, self.tsdb_ok)
 
     def _build_pipeline(self, use_llm: bool) -> EarlyWarningPipeline:
+        cfg = self.cfg
         fast = {}
         for col in FAST_COLS:
-            p = MODELS / f"fast_{col}.pt"
+            p = cfg.paths.models / f"fast_{col}.pt"
             if p.exists():
                 fast[col] = FastTrackForecaster.load(str(p))
         det = None
-        if (MODELS / "fast_anomaly.pkl").exists():
-            det = FastAnomalyDetector.load(str(MODELS / "fast_anomaly.pkl"))
+        if (cfg.paths.models / "fast_anomaly.pkl").exists():
+            det = FastAnomalyDetector.load(str(cfg.paths.models / "fast_anomaly.pkl"))
         reasoner = None
         if use_llm:
             try:
-                reasoner = RootCauseReasoner(LLMClient(), KnowledgeGraph())
+                reasoner = RootCauseReasoner(LLMClient(config=cfg.llm.to_client_dict()),
+                                             KnowledgeGraph())
             except Exception:
                 use_llm = False
         return EarlyWarningPipeline(fast_models=fast, anomaly_detector=det,
                                     reasoner=reasoner, use_llm=use_llm,
-                                    feedback_path=str(ROOT / "data" / "feedback" / "service.jsonl"))
+                                    feedback_path=str(cfg.paths.feedback))
 
     @classmethod
     def get(cls, use_llm: bool = True) -> "AgentService":
@@ -234,6 +244,9 @@ class AgentService:
         fault_signal = bool(l1) or anomaly_high or out["l2"]["exceed_eta"] is not None
         if fault_signal and realtime_n >= 600 \
                 and not self.l3_finalized and self._should_diagnose():
+            logger.info("触发 L3 根因诊断 | ts=%s l1=%d anomaly=%.3f exceed_eta=%s",
+                        out["timestamp"], len(l1), out["l2"]["anomaly_score"],
+                        out["l2"].get("exceed_eta"))
             snapshot = {
                 "l1": [a.as_dict() for a in l1],
                 "anomaly_score": out["l2"]["anomaly_score"],
@@ -305,6 +318,11 @@ class AgentService:
             # 线程安全：置唯一标志，防止并发重复诊断/重复工单
             self.l3_finalized = True
             self.l3_log.append({"timestamp": str(last.get("timestamp", "")), **diag_dict})
+            logger.info("L3 根因诊断完成 | root_cause=%s confidence=%.2f level=%s "
+                        "manual=%s retries=%d",
+                        diag_dict["root_cause"], diag_dict["confidence"],
+                        diag_dict["level"], diag_dict["manual_required"],
+                        diag_dict["retries"])
 
             # ---- ③ 故障处置智能体（工单唯一：同一故障场景只生成一次） ----
             wo, co = None, None
@@ -326,6 +344,8 @@ class AgentService:
                     self.wo_issued = True      # 工单已发，禁止重复
                     self.fh_log.append({"order_id": wo["order_id"], "level": wo["level"],
                                         "root_cause": wo["root_cause"]})
+                    logger.info("故障处置工单生成 | order_id=%s level=%s root_cause=%s",
+                                wo["order_id"], wo["level"], wo["root_cause"])
                     # ---- ④ 持续优化智能体 ----
                     co_agent = ContinuousOptimizerAgent(self)
                     fb = co_agent.feedback(wo["order_id"], wo["root_cause"], True, 25.0,

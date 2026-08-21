@@ -159,12 +159,18 @@ def workflow_run(duration: int = 600, fault: str = "pipe_leak",
 
 
 def main():
+    from config import get_logger, get_settings, setup_logging
+    setup_logging()
+    logger = get_logger("server.mcp_server")
+    mcp_cfg = get_settings().mcp
     parser = argparse.ArgumentParser(description="中频炉预警智能体 MCP Server")
-    parser.add_argument("--transport", default="stdio",
+    parser.add_argument("--transport", default=mcp_cfg.transport,
                         choices=["stdio", "sse", "streamable-http"])
-    parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=8100)
+    parser.add_argument("--host", default=mcp_cfg.host)
+    parser.add_argument("--port", type=int, default=mcp_cfg.port)
     args = parser.parse_args()
+    logger.info("MCP Server 启动 | transport=%s host=%s port=%s",
+                args.transport, args.host, args.port)
     if args.transport == "stdio":
         mcp.run(transport="stdio")
     else:

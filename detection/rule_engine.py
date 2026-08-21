@@ -44,6 +44,12 @@ class RuleThresholds:
     heat_rate_drift: float = 0.15         # 单位电耗温升率漂移 15%
     pq_offset_limit: float = 0.10         # P-Q 特性偏移 10%
 
+    @classmethod
+    def from_settings(cls) -> "RuleThresholds":
+        """从集中配置（config/settings.yaml rules 段）构造。"""
+        from config import get_settings
+        return get_settings().to_rule_thresholds()
+
 
 @dataclass
 class Alert:

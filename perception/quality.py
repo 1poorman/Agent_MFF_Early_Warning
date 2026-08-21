@@ -81,10 +81,23 @@ class QualityController:
         hampel_window_s: int = HAMPEL_WINDOW_S,
         hampel_n_sigma: float = HAMPEL_N_SIGMA,
         physical_bounds: Optional[Dict[str, tuple]] = None,
+        max_rate_per_s: Optional[Dict[str, float]] = None,
     ):
         self.hampel_window_s = hampel_window_s
         self.hampel_n_sigma = hampel_n_sigma
         self.bounds = physical_bounds or PHYSICAL_BOUNDS
+        self.max_rate_per_s = max_rate_per_s or MAX_RATE_PER_S
+
+    @classmethod
+    def from_settings(cls) -> "QualityController":
+        """从集中配置（config/settings.yaml quality 段）构造。"""
+        from config import get_settings
+        q = get_settings().quality
+        bounds = {k: tuple(v) for k, v in q.physical_bounds.items()}
+        return cls(hampel_window_s=q.hampel_window_s,
+                   hampel_n_sigma=q.hampel_n_sigma,
+                   physical_bounds=bounds or None,
+                   max_rate_per_s=q.max_rate_per_s or None)
 
     # ---------------- 主流程 ----------------
 
@@ -162,7 +175,7 @@ class QualityController:
 
             # 3) 物理速率限制：单秒跳变超过物理上限即判为异常点
             rate = series.diff().abs()
-            rate_limit = MAX_RATE_PER_S.get(col)
+            rate_limit = self.max_rate_per_s.get(col)
             if rate_limit is not None:
                 rate_outliers = rate > rate_limit
                 # 连续跳变段整体标记（避免只标记首点）

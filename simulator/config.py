@@ -58,6 +58,12 @@ class SimConfig:
     humidity_base: float = 50.0           # 湿度基线 (%RH)
     humidity_daily_amp: float = 8.0       # 湿度昼夜波动 (%RH)
 
+    @classmethod
+    def from_settings(cls) -> "SimConfig":
+        """从集中配置（config/settings.yaml simulator 段）构造。"""
+        from config import get_settings
+        return get_settings().to_sim_config()
+
 
 # 工况相位: (名称, 持续秒数, 炉温目标℃)
 PhaseSpec = Tuple[str, int, float]
