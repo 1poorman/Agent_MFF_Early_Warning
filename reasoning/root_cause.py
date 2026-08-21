@@ -73,6 +73,9 @@ class RootCauseReasoner:
         l2_text = "\n".join(f"- {k}: {v}" for k, v in l2.items()) or "无"
         stats = report.get("stats", {})
         stats_text = "\n".join(f"- {k}: {v}" for k, v in stats.items()) or "无"
+        diag_ctx = report.get("diag_context") or {}
+        cond_transition = "【工况状态】当前处于工况切换/升降温阶段，L2 异常分升高可能是工况变化导致的正常现象。必须优先依据 L1 规则与统计特征判断：若 L1 未命中且统计特征均正常（无湿度超标、无压力震荡、流量/压力/温差正常），请判定为「工况切换导致的正常波动，未发生故障」，不要误报。" if diag_ctx.get("condition_transition") else ""
+        cond_stable = "【工况状态】当前工况稳定，L2 异常分升高更可能是真实故障，请结合统计特征确诊。" if diag_ctx.get("condition_transition") is False else ""
         return f"""你是中频炉水冷系统的故障诊断专家。综合 L1 规则预警、L2 趋势预测、统计鉴别特征、近期维修工单与工况运行表，做多跳因果推理，定位最可能的物理根因。
 
 【L1 规则预警（实时越限）】
@@ -94,6 +97,8 @@ class RootCauseReasoner:
 【实时异常特征】{json.dumps(report.get('features', {}), ensure_ascii=False)}
 
 【当前工况】{report.get('condition', 'unknown')}
+{cond_transition}
+{cond_stable}
 【工况运行表】
 {report.get('operating_schedule', '无')}
 

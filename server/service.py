@@ -175,6 +175,9 @@ class AgentService:
         self.pending_wo = None
         self.pending_co = None
         self._last_l2_t = 0                  # L2 预测节流
+        self._signal_hist = []               # 故障信号稳定性滑动窗口（最近 60 条）
+        self._cond_state = "stable"          # 工况状态：stable / transition
+        self._transition_lock = 0            # 工况切换抑制锁定计数器
         self.l3_finalized = False            # L3 唯一性：首诊完成后不再重复诊断
         self.wo_issued = False               # 工单唯一性：同一故障场景只发一张
         self.preloaded = 0                   # 已预加载数据条数
@@ -293,16 +296,51 @@ class AgentService:
                 pass
 
         # ---- L3：后台异步诊断（唯一性：首诊完成后不再重复） ----
-        # 门槛：实时段(预加载后) ≥600 条 且 有"故障信号"，避免预加载边界处正常数据误触发
-        #  故障信号 = L2 异常分超阈 / L1 泄漏·流量·压力·温度规则 / GRU 越限预测
+        # 触发信号：L1 具体规则 / GRU 越限预测 / 持续 L2 异常（异常分在工况切换时
+        # 也会升高，故要求持续高异常；真实故障会在同一工况内持续异常）。
+        # 工况切换造成的假异常由 LLM 结合"工况切换上下文"排除（见 _diagnose_async）。
         realtime_n = n - self.preloaded
         anomaly_high = out["l2"]["anomaly_score"] > (det.threshold if det else 0.6)
-        fault_signal = bool(l1) or anomaly_high or out["l2"]["exceed_eta"] is not None
+        l1_hit = bool(l1)                     # 具体物理规则命中（最可靠）
+        exceed_risk = out["l2"]["exceed_eta"] is not None   # GRU 越限预测
+        # 工况切换检测：近 30 条内 operating_condition 发生变化即认为处于切换段
+        # （工况切换会造成 L2 异常分升高，属正常物理现象，切换段无 L1 强信号不触发 L3）
+        cond_transition = False
+        if "operating_condition" in row:
+            recent_cond = []
+            for r in self.stream_buf[-30:]:
+                c = r.get("operating_condition")
+                if isinstance(c, float) and pd.isna(c):
+                    continue
+                if c is not None and str(c) != "":
+                    recent_cond.append(str(c))
+            if len(recent_cond) >= 5:
+                cond_transition = len(set(recent_cond)) > 1
+        # 切换锁定：一旦检测到工况切换，后续 TRANSITION_LOCK 条都视为切换段
+        # （切换结束后 L2 异常分仍会受切换影响偏高一段，需抑制误触发）
+        TRANSITION_LOCK = 600
+        if cond_transition:
+            self._transition_lock = TRANSITION_LOCK
+        elif self._transition_lock > 0:
+            self._transition_lock -= 1
+        cond_transition = self._transition_lock > 0
+        self._cond_state = "transition" if cond_transition else "stable"
+        # 持续异常判定：近 60 条中 ≥25 条异常分超阈（同一工况内持续异常才是故障信号）
+        self._signal_hist.append(1 if anomaly_high else 0)
+        if len(self._signal_hist) > 60:
+            self._signal_hist.pop(0)
+        sustained_anomaly = sum(self._signal_hist) >= 25
+        # 故障信号：L1 规则命中 / GRU 越限预测 / 持续异常。
+        # 工况切换段：仅 L1 强信号可触发（L2 异常分在切换段正常升高，不予触发）
+        if cond_transition:
+            fault_signal = l1_hit or exceed_risk
+        else:
+            fault_signal = l1_hit or exceed_risk or sustained_anomaly
         if fault_signal and realtime_n >= 600 \
                 and not self.l3_finalized and self._should_diagnose():
-            logger.info("触发 L3 根因诊断 | ts=%s l1=%d anomaly=%.3f exceed_eta=%s",
+            logger.info("触发 L3 根因诊断 | ts=%s l1=%d anomaly=%.3f exceed_eta=%s cond=%s",
                         out["timestamp"], len(l1), out["l2"]["anomaly_score"],
-                        out["l2"].get("exceed_eta"))
+                        out["l2"].get("exceed_eta"), self._cond_state)
             snapshot = {
                 "l1": [a.as_dict() for a in l1],
                 "anomaly_score": out["l2"]["anomaly_score"],
@@ -367,9 +405,23 @@ class AgentService:
             cond = last.get("operating_condition")
             condition = "unknown" if cond is None or (
                 isinstance(cond, float) and pd.isna(cond)) else str(cond)
+            # 检测工况切换：近 600 条内 operating_condition 是否变化
+            # （工况切换会造成 L2 异常分升高，属正常物理现象，需让 LLM 结合工况排除假异常）
+            cond_change = False
+            if "operating_condition" in df.columns:
+                cond_series = df["operating_condition"].dropna()
+                if len(cond_series) >= 60:
+                    recent = cond_series.iloc[-60:]
+                    cond_change = len(recent.unique()) > 1 or \
+                                  (len(recent) > 1 and (recent != recent.iloc[0]).sum() > 0)
+            diag_ctx = {"condition_transition": cond_change,
+                        "hint": ("当前正处于工况切换/升降温阶段，L2 异常分升高可能为工况变化导致的正常现象；"
+                                 "请优先依据 L1 规则与统计特征判断，若 L1 未命中且特征正常，请判为正常工况，不要误报故障。"
+                                 if cond_change else "当前工况稳定。")}
             try:
                 diag = self.diagnose(features, condition,
-                                     sensors, stats=stats, extra_candidates=extra_cands)
+                                     sensors, stats=stats, extra_candidates=extra_cands,
+                                     diag_context=diag_ctx)
             except Exception:
                 diag = self.pipeline._fallback_diagnose(sensors, features)
                 diag.confidence = min(diag.confidence, 0.65)
@@ -479,8 +531,12 @@ class AgentService:
         return RULE_TO_SENSOR.get(rule_id, "")
 
     def diagnose(self, features, condition="unknown", sensor_names=None,
-                 l1_alerts=None, l2_forecast=None, stats=None, extra_candidates=None):
-        """L3 根因诊断（注入完整上下文）。"""
+                 l1_alerts=None, l2_forecast=None, stats=None, extra_candidates=None,
+                 diag_context: Optional[Dict] = None):
+        """L3 根因诊断（注入完整上下文）。
+
+        diag_context: 附加诊断上下文（如工况切换提示），由调用方按需提供。
+        """
         report = {
             "features": features,
             "condition": condition,
@@ -491,6 +547,8 @@ class AgentService:
             "operating_schedule": self.sched.to_prompt_text(),
             "maintenance_log": self.maint.to_prompt_text(days=60),
         }
+        if diag_context:
+            report["diag_context"] = diag_context
         if self.use_llm and self.pipeline.reasoner is not None:
             return self.pipeline.reasoner.diagnose(report=report, sensor_names=sensor_names)
         return self.pipeline._fallback_diagnose(sensor_names or list(features.keys()), features)
