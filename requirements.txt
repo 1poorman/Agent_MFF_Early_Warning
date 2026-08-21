@@ -13,5 +13,8 @@ fastapi>=0.110
 uvicorn[standard]>=0.29
 mcp>=1.0
 
+# 时序数据库（本地 PostgreSQL 分区表）
+psycopg2-binary>=2.9
+
 # 文档导出（可选，生成 docx 用系统 python 即可）
 # python-docx

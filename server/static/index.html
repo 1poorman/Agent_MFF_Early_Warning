@@ -108,6 +108,11 @@
   </select>
   <button class="primary" id="btn-start" onclick="startStream()">▶ 开始监测</button>
   <button class="danger" id="btn-stop" onclick="stopStream()" disabled>■ 停止</button>
+  <label>压/流量轴</label>
+  <select id="yscale" onchange="setYScale(this.value)">
+    <option value="linear">线性</option>
+    <option value="log" selected>对数(集中)</option>
+  </select>
   <span class="hint">数据实时流动 · L1/L2 毫秒级 · L3 后台推理(3~5s) · ①②③④ 自动联动</span>
 </div>
 
@@ -143,6 +148,7 @@
         <span class="muted" id="forecast-msg">等待数据≥2min...</span>
         <span class="muted" id="trend-msg"></span>
       </div>
+      <div class="muted" id="dew-ind" style="font-size:10.5px;margin-bottom:3px">凝露监测中...</div>
       <div class="panel" id="l2-panel"><div class="muted">暂无预警</div></div>
     </div>
     <div class="sec s-l3">
@@ -187,7 +193,8 @@ chart.setOption({
   xAxis:{type:'category', data:[], axisLabel:{color:'#7f93b8',fontSize:10}},
   yAxis:[
     {type:'value', name:'温/湿', axisLabel:{color:'#7f93b8',fontSize:10}, splitLine:{lineStyle:{color:'#1d2f52'}}},
-    {type:'value', name:'压/流', axisLabel:{color:'#7f93b8',fontSize:10}, splitLine:{show:false}}
+    {type:'log', name:'压/流', axisLabel:{color:'#7f93b8',fontSize:10}, splitLine:{show:false},
+     logBase: 10, min: 1}
   ],
   series:[
     {name:'进水温度', type:'line', data:[], smooth:true, showSymbol:false, lineStyle:{color:'#6aa8ff'}, itemStyle:{color:'#6aa8ff'}},
@@ -234,6 +241,35 @@ function pushPoint(d){
   document.getElementById('pt-count2').textContent = ptTotal;
 }
 function setText(id, v){ if(v!==undefined && v!==null) document.getElementById(id).textContent = (+v).toFixed(1); }
+
+// 切换压/流量 y 轴：对数刻度使各变量量程集中（压力150-300 与 流量4-8 在对数下视觉接近）
+function setYScale(mode){
+  const isLog = mode === 'log';
+  chart.setOption({
+    yAxis:[{}, { type: isLog?'log':'value', logBase:10, min: isLog?1:undefined }]
+  });
+}
+
+// 电气柜凝露风险展示（露点/裕度/趋势）
+function renderDew(d){
+  if(!d) return;
+  const el = document.getElementById('dew-ind');
+  const risk = d.at_risk || d.eta_s != null;
+  el.style.color = risk ? '#ff8a8a' : (d.margin<5?'#ffae42':'#5ec1ff');
+  let txt = `露点 ${d.dew_point}℃ · 裕度 ${d.margin}℃`;
+  if(d.eta_s != null) txt += ` · ⚠预测 ${(d.eta_s/60).toFixed(0)}min 后凝露`;
+  else if(d.at_risk) txt += ' · ⚠已凝露风险';
+  el.textContent = txt;
+  if(risk && !el.dataset.fired){
+    el.dataset.fired='1';
+    const p = document.getElementById('l2-panel');
+    const msg = d.eta_s!=null ? `[凝露] 预测 ${(d.eta_s/60).toFixed(0)}min 后电气柜凝露（裕度 ${d.margin}℃）`
+                              : `[凝露] 电气柜凝露风险：表面温度-露点裕度 ${d.margin}℃ (<3℃)`;
+    p.insertAdjacentHTML('afterbegin', `<div class="lv2">${msg}</div>`);
+    l2n++;
+    document.getElementById('l2-cnt').textContent = l2n;
+  }
+}
 
 function renderL1(list){
   if(!list || !list.length) return;
@@ -363,6 +399,8 @@ async function resetStream(){
   document.getElementById('anomaly-score').textContent='0.00';
   document.getElementById('forecast-msg').textContent='等待预加载...';
   document.getElementById('trend-msg').textContent='';
+  const di = document.getElementById('dew-ind');
+  if(di){ di.textContent='凝露监测中...'; di.style.color='#5ec1ff'; delete di.dataset.fired; }
   document.getElementById('pt-count2').textContent='0';
 }
 
@@ -397,6 +435,7 @@ function startStream(){
       }
       pushPoint(d);
       renderL1(d.l1); renderL2(d.l2); renderL3(d.l3);
+      renderDew(d.dew);
       renderFH(d.work_order); renderCO(d.optimization);
     };
     ws.onclose = ()=>{ stopStream(); };

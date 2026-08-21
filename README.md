@@ -172,6 +172,27 @@ Hampel 滤波 + 速率限制）→ **同工况加权插补**（误差 <2%）。
 - 红(声光+短信+电话)/橙(APP+短信)/黄(APP) 三级推送矩阵
 - 反馈归档 JSONL 持久化，真实故障样本 ≥5 触发微调标记，根因修正自动更新知识库
 
+### 4.7 电气柜凝露风险预警
+
+- 露点温度：Magnus-Tetens 公式 `T_d = c·γ/(b-γ)`（含温度+湿度）
+- 凝露判据：柜体表面温度 − 露点温度 < 3℃（绝缘下降/短路风险）
+- 缓变趋势：裕度线性外推，预测 10min 内跌破阈值即预警（提前 ~9min）
+- 实时流集成：`stream_step` 每帧计算露点/裕度，L2 面板显示"露点/裕度/预测"
+
+### 4.8 时序数据存储（storage/）
+
+本地 PostgreSQL 16 + 声明式月度 RANGE 分区（等效时序库 hypertable，无需 TimescaleDB 扩展）：
+
+```bash
+# 建库（一次性）
+PGPASSWORD=postgres psql -h localhost -U postgres -c "CREATE DATABASE mff_tsdb;"
+python -c "from storage import TimeSeriesDB; print(TimeSeriesDB().stats())"  # 自动建表
+```
+
+- 写入：WebSocket 实时流异步落库（每 10 条合并，失败不影响 Demo）
+- 查询：`GET /api/v1/tsdb/stats`（分区/记录数）、`POST /api/v1/tsdb/query`（区间/工况/故障过滤）
+- 分区：按月度 RANGE，自动预建下月分区，索引覆盖 `ts/工况/故障标签`
+
 ## 五、目录结构
 
 ```
@@ -184,8 +205,9 @@ workflow/      五节点端到端编排
 context/       维修工单 / 工况运行表（LLM 上下文）
 tools/         热平衡 / 露点 / 时序衍生特征计算器
 server/        四大智能体 + RESTful API + MCP Server + Web 界面
+storage/       时序数据存储（本地 PostgreSQL 月度分区表，自动建分区）
 design/        蓝图 / 里程碑 / 测试报告 / 接口文档
-tests/         40 项验收测试（全部通过）
+tests/         42 项验收测试（全部通过）
 ```
 
 ## 六、测试与验证

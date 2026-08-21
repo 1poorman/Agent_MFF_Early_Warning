@@ -16,6 +16,8 @@ from detection.fast_anomaly import FastAnomalyDetector
 from detection.fast_track import FastTrackForecaster
 from perception import DataIngestor, QualityController
 from reasoning import KnowledgeGraph, LLMClient, RootCauseReasoner
+from storage import TimeSeriesDB
+from tools.dew_point import CondensationPredictor, dew_point_margin
 from workflow import EarlyWarningPipeline
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -44,6 +46,15 @@ class AgentService:
         # 实时数据缓存（供界面展示）
         self.latest_window: Optional[pd.DataFrame] = None
         self.latest_result = None
+        # 电气柜凝露预测器（露点计算 + 缓变趋势外推）
+        self.dew = CondensationPredictor(margin_warn_c=3.0, window_s=600, horizon_s=600)
+        # 时序数据库（本地 PostgreSQL 分区表；失败不影响 Demo）
+        try:
+            self.tsdb = TimeSeriesDB()
+            self.tsdb_ok = True
+        except Exception as e:
+            self.tsdb_ok = False
+            print(f"[warn] 时序数据库不可用: {e}")
 
     def _build_pipeline(self, use_llm: bool) -> EarlyWarningPipeline:
         fast = {}
@@ -98,6 +109,7 @@ class AgentService:
         self.l3_finalized = False            # L3 唯一性：首诊完成后不再重复诊断
         self.wo_issued = False               # 工单唯一性：同一故障场景只发一张
         self.preloaded = 0                   # 已预加载数据条数
+        self.dew_log = []                    # 凝露风险预警日志
         self._stream_cols = ["inlet_temp", "outlet_temp", "pressure", "flow_rate",
                              "tank_level", "cabinet_temp", "cabinet_humidity",
                              "furnace_temp", "electric_power"]
@@ -134,10 +146,36 @@ class AgentService:
             self.stream_buf.pop(0)
 
         out = {"timestamp": str(row["timestamp"]), "metrics": {},
-               "preloaded": self.preloaded}
+               "preloaded": self.preloaded, "dew": None}
         for c in self._stream_cols:
             if c in row:
                 out["metrics"][c] = row[c]
+
+        # ---- 电气柜凝露风险（露点计算 + 缓变趋势预测） ----
+        # 凝露条件：柜体表面温度 < 露点温度（湿空气在低温表面凝结，绝缘下降/短路风险）
+        if "cabinet_temp" in row and "cabinet_humidity" in row:
+            try:
+                margin_now = float(dew_point_margin(row["cabinet_temp"], row["cabinet_humidity"]))
+                t_dew = row["cabinet_temp"] - margin_now
+                out["dew"] = {"dew_point": round(float(t_dew), 1),
+                              "margin": round(margin_now, 2),
+                              "at_risk": margin_now < 3.0,
+                              "eta_s": None}
+                if out["dew"]["at_risk"]:
+                    self.dew_log.append({"timestamp": out["timestamp"], "type": "dew_now",
+                                         "msg": f"电气柜凝露风险：表面温度-露点裕度 {margin_now:.1f}℃ (<3℃)"})
+                # 趋势预测：实时段 ≥10min 且每 60s 评估一次
+                realtime_n = len(self.stream_buf) - self.preloaded
+                if realtime_n >= 600 and realtime_n % 60 == 0:
+                    dff = pd.DataFrame(self.stream_buf[-120:])
+                    risk = self.dew.assess(pd.to_datetime(dff["timestamp"]),
+                                           dff["cabinet_temp"], dff["cabinet_humidity"])
+                    if risk.predicted_risk:
+                        out["dew"]["eta_s"] = risk.eta_s
+                        self.dew_log.append({"timestamp": out["timestamp"], "type": "dew_predict",
+                                             "msg": f"预测 {risk.eta_s/60:.0f}min 后电气柜凝露（当前裕度 {risk.margin_now:.1f}℃）"})
+            except Exception:
+                pass
 
         # ---- L1：直接对当前行瞬时判定（无需质量管控，微秒级） ----
         try:
@@ -310,9 +348,27 @@ class AgentService:
             "l1": self.l1_log[-40:],
             "l2": self.l2_log[-40:],
             "l3": self.l3_log[-10:],
+            "dew": self.dew_log[-10:],
             "work_orders": self.fh_log[-5:],
             "feedback": self.co_log[-5:],
         }
+
+    # ---------------- 时序落库（异步，失败不影响 Demo） ----------------
+
+    def persist(self, row: dict):
+        """单条落库到本地时序数据库（异步线程，避免阻塞实时流）。"""
+        if not getattr(self, "tsdb_ok", False):
+            return
+        try:
+            import threading as _t
+            def _do():
+                try:
+                    self.tsdb.insert([dict(row)])
+                except Exception:
+                    pass
+            _t.Thread(target=_do, daemon=True).start()
+        except Exception:
+            pass
 
     def _should_diagnose(self, min_interval: int = 10) -> bool:
         """L3 诊断节流：避免每条都调 LLM（默认 10s 一次，演示中随故障发展自动更新诊断）。"""

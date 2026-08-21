@@ -237,11 +237,14 @@ async def stream_ws(ws: WebSocket):
 
         # ---- 实时推送阶段 ----
         interval = 1.0 / max(speed, 1.0)
-        for _ in range(duration):
+        for i in range(duration):
             row = sim._sense(sim.step())   # 带测量噪声的传感器读数
             row["timestamp"] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
             # stream_step 含潜在 LLM 同步推理，放入线程池避免阻塞事件循环（WS keepalive）
             out = await loop.run_in_executor(None, s.stream_step, row)
+            # 时序落库（异步，每 10 条合并落一次，失败不影响 Demo）
+            if getattr(s, "tsdb_ok", False) and i % 10 == 0:
+                s.persist(row)
             await ws.send_json(out)
             await asyncio.sleep(interval)
         await ws.send_json({"done": True})
@@ -264,6 +267,43 @@ def stream_reset():
     """重置实时流缓冲与日志（新一次监测）。"""
     svc().reset_stream()
     return {"code": 0, "data": {"reset": True}}
+
+
+class TsQueryRequest(BaseModel):
+    start: str                        # "2026-08-21 00:00:00"
+    end: str
+    condition: Optional[str] = None
+    fault: Optional[str] = None
+    columns: Optional[List[str]] = None
+
+
+@app.get("/api/v1/tsdb/stats")
+def tsdb_stats():
+    """时序数据库存储统计（分区/记录数）。"""
+    s = svc()
+    if not getattr(s, "tsdb_ok", False):
+        return {"code": 0, "data": {"enabled": False, "reason": "数据库未连接"}}
+    try:
+        return {"code": 0, "data": {"enabled": True, **s.tsdb.stats()}}
+    except Exception as e:
+        return {"code": 0, "data": {"enabled": False, "reason": str(e)}}
+
+
+@app.post("/api/v1/tsdb/query")
+def tsdb_query(req: TsQueryRequest):
+    """从时序数据库读取历史数据（区间/工况/故障过滤）。"""
+    s = svc()
+    if not getattr(s, "tsdb_ok", False):
+        raise HTTPException(status_code=5001, detail="时序数据库未连接")
+    from datetime import datetime
+    df = s.tsdb.query(
+        start=datetime.fromisoformat(req.start),
+        end=datetime.fromisoformat(req.end),
+        condition=req.condition, fault=req.fault, columns=req.columns)
+    return {"code": 0, "data": {
+        "count": len(df),
+        "records": df.to_dict("records"),
+    }}
 
 
 # ---------------- 四大智能体接口 ----------------
