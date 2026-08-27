@@ -412,8 +412,8 @@ function renderL2(l2){
 function renderL3(d){
   if(d==='diagnosing'){ document.getElementById('l3-area').innerHTML='<div class="muted lv3">L3 根因推理中（3~5s）...</div>'; return; }
   if(!d || typeof d !== 'object') return;
-  // 去重：WS 帧与 pollLogs 双通道会送达同一份诊断（时间戳+根因+置信度一致）
-  const lk = [(d.timestamp||''), d.root_cause, d.confidence].join('|');
+  // 去重：WS 帧与 pollLogs 双通道会送达同一份诊断（时间戳+根因一致即可判定）
+  const lk = [(d.timestamp||''), d.root_cause].join('|');
   if(!renderL3.seen) renderL3.seen = new Set();
   if(renderL3.seen.has(lk)) return;
   renderL3.seen.add(lk);

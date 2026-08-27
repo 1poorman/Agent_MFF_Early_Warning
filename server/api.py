@@ -370,15 +370,14 @@ async def _drain_and_done(ws: WebSocket, s, extra: Optional[Dict] = None,
     deadline = loop.time() + timeout_s
     while loop.time() < deadline:
         if s.pending_l3 is not None:
-            ts = getattr(s, "_pending_l3_ts", "")
-            # 注入时间戳（与 l3_log 日志条目一致，供前端去重与展示）
-            l3 = {**s.pending_l3, "timestamp": ts}
+            # 诊断对象自带 timestamp（构造时写入），与 /stream/logs 载荷一致，
+            # 保证前端跨通道去重生效
             await ws.send_json({
-                "timestamp": ts,
+                "timestamp": s.pending_l3.get("timestamp", ""),
                 "metrics": {},
                 "l1": [],
                 "l2": {"anomaly_score": 0.0, "exceed_eta": None, "forecast": None},
-                "l3": l3,
+                "l3": s.pending_l3,
                 "work_order": s.pending_wo,
                 "optimization": s.pending_co,
             })

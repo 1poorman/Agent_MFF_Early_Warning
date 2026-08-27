@@ -413,6 +413,11 @@ class AgentService:
                 diag = self.pipeline._fallback_diagnose(sensors, features)
                 diag.confidence = min(diag.confidence, 0.65)
             diag_dict = diag.to_dict()
+            # 时间戳随诊断对象本身下发：WS 帧（out["l3"]=pending_l3）与
+            # /stream/logs 日志条目必须为同一载荷，前端按
+            # "timestamp|root_cause|confidence" 去重，缺时间戳会导致去重失效、
+            # 同一诊断在界面渲染两次
+            diag_dict["timestamp"] = str(last.get("timestamp", ""))
             # 附加诊断上下文（与故障直接相关：L1/L2 上报 + 特征值 + 统计特征 + 维修记录）
             l1_ctx = snapshot["l1"]
             diag_dict["context"] = {
@@ -429,8 +434,7 @@ class AgentService:
             }
             # 线程安全：置唯一标志，防止并发重复诊断/重复工单
             self.l3_finalized = True
-            self._pending_l3_ts = str(last.get("timestamp", ""))
-            self.l3_log.append({"timestamp": str(last.get("timestamp", "")), **diag_dict})
+            self.l3_log.append(diag_dict)
             logger.info("L3 根因诊断完成 | root_cause=%s confidence=%.2f level=%s "
                         "manual=%s retries=%d",
                         diag_dict["root_cause"], diag_dict["confidence"],
