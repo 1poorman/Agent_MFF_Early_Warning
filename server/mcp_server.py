@@ -170,7 +170,7 @@ def main():
     is_stdio = args.transport == "stdio"
     # stdio 模式下控制台日志必须禁用：stdout 是 JSON-RPC 协议通道，
     # 混入日志行会破坏 MCP Host 解析（协议错误）。文件日志仍保留。
-    setup_logging(console=not is_stdio)
+    setup_logging(console=not is_stdio, force=True)
     logger = get_logger("server.mcp_server")
     logger.info("MCP Server 启动 | transport=%s host=%s port=%s",
                 args.transport, args.host, args.port)

@@ -28,10 +28,10 @@ mcp:
 logging:
   level: INFO                    # DEBUG / INFO / WARNING / ERROR
   dir: logs                      # 日志目录（相对项目根）
-  file: app.log                  # 运行日志文件
-  error_file: error.log          # 错误日志文件（ERROR 及以上）
-  max_bytes: 10485760            # 单文件 10MB 滚动
-  backup_count: 10               # 保留滚动份数
+  file: app.log                  # 运行日志文件（按天滚动，北京时间 00:00 切换）
+  error_file: error.log          # 错误日志文件（ERROR 及以上，同样按天滚动）
+  max_bytes: 10485760            # （已弃用：改为按天滚动，保留兼容旧配置）
+  backup_count: 10               # 历史日志保留天数（app.log.YYYY-MM-DD）
   format: "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 
 # ---------------- 大模型（LLM）----------------
