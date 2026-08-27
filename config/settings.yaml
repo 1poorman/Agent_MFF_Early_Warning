@@ -38,15 +38,15 @@ logging:
 # url/key 通常由项目根 .env 提供（key: value 风格），此处留空则由 .env 覆盖；
 # 也可用环境变量 MFF_LLM_URL / MFF_LLM_KEY 覆盖。
 llm:
-  url: ""                        # <LLM 服务地址>/v1
-  key: ""                        # API KEY（敏感，建议 .env/环境变量）
-  big_model_name: Qwen3.6-27B-INT4
-  small_model_name: qwen3-14b-local
-  api_key: empty
-  base_url: ""                   # 小模型底座（可选）
-  enable_thinking: false         # 关闭思考模式加速推理
+  url: http://172.25.67.140:9997/v1        # Qwen3.6-27B 大模型底座 <LLM 服务地址>/v1
+  key: ""                                  # API KEY（敏感，实际值存项目根 .env 的 key）
+  big_model_name: Qwen3.6-27B              # 大模型（L3 根因推理）
+  small_model_name: Qwen3.6-27B-INT4       # 小模型底座
+  api_key: empty                           # 小模型 API KEY（敏感，实际值存 .env 的 api_key）
+  base_url: http://172.25.67.120:9997/v1   # Qwen3.6-27B-INT4 小模型底座 <LLM 服务地址>/v1
+  enable_thinking: true          # 打开思考模式（推理链经 reasoning 字段解析）
   timeout: 60.0                  # 推理超时（秒）
-  max_tokens: 1500
+  # max_tokens 使用代码默认值：chat 默认 1500，L3 根因推理路径固定 4000
   temperature: 0.2
 
 # ---------------- 时序数据库（PostgreSQL）----------------

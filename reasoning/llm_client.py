@@ -43,9 +43,15 @@ class LLMClient:
     """大模型客户端。"""
 
     def __init__(self, config: Optional[dict] = None, prefer: str = "big",
-                 timeout: float = 60.0, enable_thinking: bool = False):
+                 timeout: Optional[float] = None,
+                 enable_thinking: Optional[bool] = None):
         cfg = config or _load_central_or_env()
-        self.enable_thinking = enable_thinking
+        # 思考模式/超时取集中配置（settings.yaml llm 段，可被 .env 覆盖）；
+        # 显式传入的参数优先于配置
+        self.enable_thinking = bool(cfg.get("enable_thinking", False)) \
+            if enable_thinking is None else enable_thinking
+        if timeout is None:
+            timeout = float(cfg.get("timeout") or 60.0)
         if prefer == "big" and cfg.get("url"):
             base = cfg["url"]
             base = base if base.startswith("http") else "http://" + base

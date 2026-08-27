@@ -249,6 +249,7 @@ let buf = { ts: [] };
 SENSORS.forEach((s,i)=>{ buf[s[0]] = []; });
 let ws = null, l1n=0, l2n=0, l3n=0, won=0, pollTimer=null, ptTotal=0;
 let lastForecast = null;   // 最近一次预测序列
+let gStop=false, streamEpoch=0;   // 流结束状态与会话代次（用于优雅收尾/保底轮询）
 
 // 右轴传感器（压/流/电/炉温类，量纲各异用对数轴）
 const RIGHT_AXIS_KEYS = new Set(['pressure','flow_rate','flow_velocity','conductivity',
@@ -411,6 +412,11 @@ function renderL2(l2){
 function renderL3(d){
   if(d==='diagnosing'){ document.getElementById('l3-area').innerHTML='<div class="muted lv3">L3 根因推理中（3~5s）...</div>'; return; }
   if(!d || typeof d !== 'object') return;
+  // 去重：WS 帧与 pollLogs 双通道会送达同一份诊断（时间戳+根因+置信度一致）
+  const lk = [(d.timestamp||''), d.root_cause, d.confidence].join('|');
+  if(!renderL3.seen) renderL3.seen = new Set();
+  if(renderL3.seen.has(lk)) return;
+  renderL3.seen.add(lk);
   l3n++;
   document.getElementById('wa-level').textContent = '级别 ' + (d.level||'orange').toUpperCase();
   const area = document.getElementById('l3-area');
@@ -457,6 +463,12 @@ function renderL3(d){
 const CHANNEL_CN = {sound_light_alarm:'声光报警', sms:'短信', phone:'电话', mobile_app:'APP推送'};
 function renderFH(wo){
   if(!wo) return;
+  // 去重：同一工单号只渲染一次（WS 帧与 pollLogs 双通道）
+  if(wo.order_id){
+    if(!renderFH.seen) renderFH.seen = new Set();
+    if(renderFH.seen.has(wo.order_id)) return;
+    renderFH.seen.add(wo.order_id);
+  }
   won++;
   document.getElementById('wo-cnt').textContent = won;
   const area = document.getElementById('fh-area');
@@ -537,6 +549,9 @@ async function resetStream(){
   lastLogLen = {l3:0, wo:0, co:0};
   l1n=l2n=l3n=won=ptTotal=0;
   lastForecast = null;
+  gStop=false;
+  if(renderL3.seen) renderL3.seen.clear();
+  if(renderFH.seen) renderFH.seen.clear();
   document.getElementById('l1-panel').innerHTML='<div class="muted">暂无预警</div>';
   document.getElementById('l2-panel').innerHTML='<div class="muted">暂无预警</div>';
   document.getElementById('l3-area').innerHTML='<div class="muted">暂无诊断</div>';
@@ -595,6 +610,7 @@ function setSensorMode(mode){
 }
 
 async function startStream(){
+  streamEpoch++;               // 使上一轮的保底轮询定时器失效
   buf = { ts: [] };
   SENSORS.forEach(s=>{ buf[s[0]] = []; });
   try{ await resetStream(); }catch(e){ console.warn('reset 失败(忽略):', e); }
@@ -618,7 +634,7 @@ async function startStream(){
     };
     ws.onmessage = (e)=>{
       const d = JSON.parse(e.data);
-      if(d.done){ stopStream(); return; }
+      if(d.done){ gracefulDone(); return; }
       if(d.error){ console.error(d.error); return; }
       if(d.preload){                       // 预加载阶段
         document.getElementById('forecast-msg').innerHTML = `预加载历史数据 ${d.points} 点（${d.forecast_model||'GRU'} 窗口）...`;
@@ -636,8 +652,8 @@ async function startStream(){
       renderDew(d.dew);
       renderFH(d.work_order); renderCO(d.optimization);
     };
-    ws.onclose = ()=>{ stopStream(); };
-    ws.onerror = ()=>{ stopStream(); };
+    ws.onclose = ()=>{ if(!gStop) stopStream(); };
+    ws.onerror = ()=>{ if(!gStop) stopStream(); };
   }catch(e){
     console.error('启动 WebSocket 失败:', e);
     document.getElementById('run-status').innerHTML='<span class="badge b-warn">连接失败</span>';
@@ -646,7 +662,23 @@ async function startStream(){
   }
   pollTimer = setInterval(pollLogs, 3000);
 }
+
+// 流正常结束：服务端已在 done 前排空后台 L3/工单/反馈（_drain_and_done），
+// 此处仅更新界面状态；保底再轮询 45s，捕获极端慢速兜底落盘的结果
+function gracefulDone(){
+  gStop = true;
+  try{ ws && ws.close(); }catch(e){}
+  ws = null;
+  const epoch = streamEpoch;
+  document.getElementById('run-status').innerHTML='<span class="badge b-ok">已完成</span>';
+  document.getElementById('btn-start').disabled=false;
+  document.getElementById('btn-stop').disabled=true;
+  setTimeout(()=>{
+    if(streamEpoch===epoch && pollTimer && !ws){ clearInterval(pollTimer); pollTimer=null; }
+  }, 45000);
+}
 function stopStream(){
+  streamEpoch++;               // 手动停止同样使保底定时器失效
   if(ws){ try{ws.close();}catch(e){} ws=null; }
   if(pollTimer){ clearInterval(pollTimer); pollTimer=null; }
   document.getElementById('run-status').innerHTML='<span class="badge b-warn">已停止</span>';

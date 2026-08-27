@@ -357,6 +357,41 @@ class StreamRequest(BaseModel):
     data_source: str = Field("simulator", description="数据源：simulator（物理仿真生成）/ upload（回放已上传时序数据）")
 
 
+async def _drain_and_done(ws: WebSocket, s, extra: Optional[Dict] = None,
+                          timeout_s: float = 90.0, interval_s: float = 0.5):
+    """流尾兜底：等待后台 L3/工单/反馈完成并在连接内推送，避免结果落在断连之后。
+
+    LLM 推理较慢时，_diagnose_async 的结果可能在最后一条实时数据之后才产出；
+    若直接发送 done 断开连接，诊断结果将永远无法到达前端（L3/③/④ 界面不同步）。
+    此处在 done 前持续监听 pending_*，一旦有新结果立即按与实时帧相同的结构
+    下发（前端无需任何改动即可渲染），超时或无残留则正常收尾。
+    """
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout_s
+    while loop.time() < deadline:
+        if s.pending_l3 is not None:
+            ts = getattr(s, "_pending_l3_ts", "")
+            # 注入时间戳（与 l3_log 日志条目一致，供前端去重与展示）
+            l3 = {**s.pending_l3, "timestamp": ts}
+            await ws.send_json({
+                "timestamp": ts,
+                "metrics": {},
+                "l1": [],
+                "l2": {"anomaly_score": 0.0, "exceed_eta": None, "forecast": None},
+                "l3": l3,
+                "work_order": s.pending_wo,
+                "optimization": s.pending_co,
+            })
+            s.pending_l3 = s.pending_wo = s.pending_co = None
+        if s.pending_l3 is None and not getattr(s, "_diag_inflight", False):
+            break
+        await asyncio.sleep(interval_s)
+    payload = {"done": True}
+    if extra:
+        payload.update(extra)
+    await ws.send_json(payload)
+
+
 @app.websocket("/ws/stream", name="实时流")
 async def stream_ws(ws: WebSocket):
     """实时流：simulator 逐秒生成数据 -> 逐条处理 -> 推送指标与 L1/L2/L3 预警。
@@ -409,7 +444,7 @@ async def stream_ws(ws: WebSocket):
                 await ws.send_json(out)
                 pushed += 1
                 await asyncio.sleep(interval)
-            await ws.send_json({"done": True, "points": pushed, "data_source": "upload"})
+            await _drain_and_done(ws, s, {"points": pushed, "data_source": "upload"})
             logger.info("上传数据回放完成 | 分析 %d 条", pushed)
             return
 
@@ -442,7 +477,7 @@ async def stream_ws(ws: WebSocket):
                 s.persist(row)
             await ws.send_json(out)
             await asyncio.sleep(interval)
-        await ws.send_json({"done": True})
+        await _drain_and_done(ws, s)
         logger.info("实时流完成 | 推送 %d 条", duration)
     except WebSocketDisconnect:
         logger.info("实时流客户端断开 | client=%s", ws.client.host if ws.client else "unknown")
@@ -694,7 +729,9 @@ def workflow_run(req: WorkflowRunRequest):
     wa = ag["warning_analyzer"].analyze(dm["records"])
     trace.append({"agent": "warning_analyzer", "latency_ms": round((time.perf_counter() - t0) * 1000, 1),
                   "level": wa["level"], "l1_triggered": wa["l1"]["triggered"],
-                  "anomaly_score": wa["l2"]["anomaly_score"]})
+                  "anomaly_score": wa["l2"]["anomaly_score"],
+                  "l2_trend_exceed": wa["l2"]["trend_exceed"],
+                  "l2_forecast_end": (wa["l2"]["forecast"] or {}).get("end_value")})
 
     # 节点3: 故障处置智能体
     t0 = time.perf_counter()

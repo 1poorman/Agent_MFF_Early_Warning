@@ -73,6 +73,8 @@ class LLMSettings:
             "big_model_name": self.big_model_name,
             "small_model_name": self.small_model_name,
             "api_key": self.api_key, "base_url": self.base_url,
+            "enable_thinking": self.enable_thinking,
+            "timeout": self.timeout,
         }
 
 

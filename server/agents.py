@@ -198,8 +198,11 @@ class WarningAnalysisAgent:
             except Exception:
                 pass
 
-        # L3 根因诊断（L1 触发或 L2 异常超阈时）
-        triggered = bool(l1) or l2["anomaly_triggered"]
+        # L3 根因诊断（L1 触发 或 L2 异常超阈 或 L2 趋势越限预测时）
+        # 对齐实时流路径（service.stream_step）：GRU/PatchTST/TimesFM 越限预测
+        # （trend_exceed）也是故障信号之一，不能仅作前端展示
+        triggered = bool(l1) or l2["anomaly_triggered"] \
+            or l2["trend_exceed"] is not None
         diagnosis = None
         if triggered:
             from workflow.pipeline import RULE_TO_SENSOR
@@ -219,9 +222,22 @@ class WarningAnalysisAgent:
             # 统计预鉴别：依据 stats 计算倾向根因，并入 LLM 候选集（防图谱召回漏检）
             extra_cands = self._stat_precheck(features, stats)
             try:
+                # 注入完整 L2 预测分析结果（异常分 + 越限预测 + 趋势预测摘要），
+                # 随 report["l2_forecast"] 渲染进 LLM 提示词，作为根因推理与
+                # 预警分级的依据（series 曲线过长不注入，仅摘要字段）
+                fc_brief = {k: v for k, v in (l2.get("forecast") or {}).items()
+                            if k != "series"}
+                te = l2["trend_exceed"]
                 diag = self.svc.diagnose(
                     features, condition, sensors,
-                    l1_alerts=l1, l2_forecast={"anomaly_score": l2["anomaly_score"]},
+                    l1_alerts=l1,
+                    l2_forecast={
+                        "anomaly_score": l2["anomaly_score"],
+                        "anomaly_triggered": l2["anomaly_triggered"],
+                        "趋势越限预测ETA_秒": te["eta_s"] if te else None,
+                        "趋势越限预测说明": te["message"] if te else "无",
+                        "forecast_summary": fc_brief or None,
+                    },
                     stats=stats, extra_candidates=extra_cands)
             except Exception:
                 diag = self.svc.pipeline._fallback_diagnose(sensors, features)

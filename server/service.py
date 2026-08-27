@@ -180,6 +180,7 @@ class AgentService:
         self._transition_lock = 0            # 工况切换抑制锁定计数器
         self.l3_finalized = False            # L3 唯一性：首诊完成后不再重复诊断
         self.wo_issued = False               # 工单唯一性：同一故障场景只发一张
+        self._diag_inflight = False          # 后台诊断互斥：同一时间只跑一个 LLM 诊断
         self.preloaded = 0                   # 已预加载数据条数
         self.dew_log = []                    # 凝露风险预警日志
         self._stream_cols = ["inlet_temp", "outlet_temp", "pressure", "flow_rate",
@@ -337,7 +338,9 @@ class AgentService:
         else:
             fault_signal = l1_hit or exceed_risk or sustained_anomaly
         if fault_signal and realtime_n >= 600 \
-                and not self.l3_finalized and self._should_diagnose():
+                and not self.l3_finalized \
+                and not getattr(self, "_diag_inflight", False) \
+                and self._should_diagnose():
             logger.info("触发 L3 根因诊断 | ts=%s l1=%d anomaly=%.3f exceed_eta=%s cond=%s",
                         out["timestamp"], len(l1), out["l2"]["anomaly_score"],
                         out["l2"].get("exceed_eta"), self._cond_state)
@@ -348,6 +351,7 @@ class AgentService:
                 "buf": list(self.stream_buf[-600:]),
             }
             import threading
+            self._diag_inflight = True
             threading.Thread(target=self._diagnose_async, args=(snapshot,),
                              daemon=True).start()
             out["l3"] = "diagnosing"   # 界面提示诊断中
@@ -425,6 +429,7 @@ class AgentService:
             }
             # 线程安全：置唯一标志，防止并发重复诊断/重复工单
             self.l3_finalized = True
+            self._pending_l3_ts = str(last.get("timestamp", ""))
             self.l3_log.append({"timestamp": str(last.get("timestamp", "")), **diag_dict})
             logger.info("L3 根因诊断完成 | root_cause=%s confidence=%.2f level=%s "
                         "manual=%s retries=%d",
@@ -468,7 +473,10 @@ class AgentService:
             self.pending_wo = wo if wo and wo.get("handled") else None
             self.pending_co = co
         except Exception:
-            pass
+            logger.exception("后台 L3 诊断线程异常")
+        finally:
+            # 诊断互斥释放：允许下一次触发（仍受 l3_finalized 唯一性约束）
+            self._diag_inflight = False
 
     def get_stream_logs(self):
         """返回各级预警与工单/反馈日志（供界面轮询）。"""
