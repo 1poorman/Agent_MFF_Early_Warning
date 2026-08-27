@@ -379,28 +379,11 @@ class AgentService:
             for s, c in col_map.items():
                 if c in df.columns:
                     features[s] = float(last[c])
-            # 尾段统计鉴别特征
-            tail = df.iloc[-120:]
-            stats = {}
-            if "cabinet_humidity" in tail.columns:
-                stats["湿度均值_pctRH"] = round(float(tail["cabinet_humidity"].mean()), 1)
-                features["湿度"] = stats["湿度均值_pctRH"]
-                # 湿度上升趋势（泄漏早期信号）：尾段120s均值 - 前段120s均值
-                if len(df) >= 240:
-                    head = df.iloc[-240:-120]
-                    hum_delta = round(float(tail["cabinet_humidity"].mean())
-                                      - float(head["cabinet_humidity"].mean()), 1)
-                    stats["湿度上升量_pctRH"] = hum_delta
-                    features["_hum_delta"] = hum_delta
-            if "pressure" in tail.columns:
-                import numpy as np
-                v = tail["pressure"].to_numpy(dtype=float)
-                if len(v) >= 10:
-                    t = np.arange(len(v))
-                    slope, intercept = np.polyfit(t, v, 1)
-                    stats["压力波动幅度_std_kPa"] = round(float(np.std(v - (slope * t + intercept))), 2)
-                features["_press_std"] = stats.get("压力波动幅度_std_kPa", 0.0)
+            # 尾段统计鉴别特征：与批量路径共用实现（含 PQ特性偏移/进出水温差/
+            # 单位电耗温升率等结垢专属特征，保证两条诊断链路口径一致）
             from .agents import WarningAnalysisAgent
+            stats = {}
+            WarningAnalysisAgent.compute_diag_stats(df, stats, features)
             extra_cands = WarningAnalysisAgent._stat_precheck(features, stats)
             cond = last.get("operating_condition")
             condition = "unknown" if cond is None or (

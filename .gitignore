@@ -44,3 +44,6 @@ models/
 .DS_Store
 .idea/
 .vscode/
+
+# ---- 测试文件 ----
+tests/

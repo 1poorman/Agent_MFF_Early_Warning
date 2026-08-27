@@ -7,11 +7,14 @@
     http://localhost:8000/docs  (Swagger UI)
 界面：
     http://localhost:8000/      (Web Demo)
+MCP（挂载于同一端口）：
+    http://localhost:8000/mcp   (streamable-http 端点)
 """
 
 import asyncio
 import io
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -735,6 +738,31 @@ def workflow_run(req: WorkflowRunRequest):
 def index():
     return (STATIC / "index.html").read_text(encoding="utf-8")
 
+
+# ---------------- MCP（streamable-http）挂载 ----------------
+# 将四大智能体 MCP 能力挂载到 /mcp，与 API/Web 共用同一端口（8000），
+# 公网只需映射一个端口（如 9000->8000）即可同时访问 API 与 MCP。
+# 端点：http://<host>:8000/mcp
+# 说明：streamable_http_app 自带 lifespan（启动 session_manager 的 task group），
+# 作为子应用挂载后父应用不会自动触发其 lifespan，需手动并入，否则请求会报
+# "Task group is not initialized"。
+try:
+    from .mcp_server import mcp as _mcp
+    _mcp_app = _mcp.streamable_http_app(streamable_http_path="/")
+    _mcp_lifespan = _mcp_app.router.lifespan_context
+    _orig_lifespan = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def _combined_lifespan(app_self):
+        async with _mcp_lifespan(app_self):
+            async with _orig_lifespan(app_self):
+                yield
+
+    app.router.lifespan_context = _combined_lifespan
+    app.mount("/mcp", _mcp_app, name="mcp")
+    logger.info("MCP streamable-http 已挂载至 /mcp（与 API 共用端口 %s）", cfg.app.port)
+except Exception as _e:  # 挂载失败不影响 API 本身
+    logger.warning("MCP 挂载至 /mcp 失败（API 仍可用）: %s", _e)
 
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 

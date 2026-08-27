@@ -211,27 +211,11 @@ class WarningAnalysisAgent:
             features = {s: float(last[c]) for s, c in col_map.items()
                         if c in df.columns and not pd.isna(last[c])}
             # 窗口统计鉴别特征（气蚀/泄漏/堵塞/结垢区分的决定性依据，注入 LLM 提示）
-            # 取最近 120s 尾段统计，避免故障前正常段稀释（爬升期整窗均值会失真）
-            tail = df.iloc[-120:] if len(df) >= 120 else df
+            # 取最近 120s 尾段统计，避免故障前正常段稀释（爬升期整窗均值会失真）。
+            # 含 PQ 特性偏移/进出水温差/单位电耗温升率等结垢专属特征，
+            # 与实时流路径（service._diagnose_async）共用同一实现。
             stats = {}
-            if "pressure" in tail.columns:
-                stats["压力波动幅度_std_kPa"] = round(self._detrended_std(tail["pressure"]), 2)
-                stats["压力均值_kPa"] = round(float(tail["pressure"].mean()), 1)
-            if "cabinet_humidity" in tail.columns:
-                stats["湿度均值_pctRH"] = round(float(tail["cabinet_humidity"].mean()), 1)
-                features["湿度"] = stats["湿度均值_pctRH"]
-                # 湿度上升趋势（泄漏早期信号）：尾段120s均值 - 前段120s均值
-                if len(df) >= 240:
-                    head = df.iloc[-240:-120]
-                    hum_delta = round(float(tail["cabinet_humidity"].mean())
-                                      - float(head["cabinet_humidity"].mean()), 1)
-                    stats["湿度上升量_pctRH"] = hum_delta
-                    features["_hum_delta"] = hum_delta
-            if "flow_rate" in tail.columns:
-                stats["流量均值_Lps"] = round(float(tail["flow_rate"].mean()), 2)
-            if "tank_level" in tail.columns:
-                stats["液位均值_cm"] = round(float(tail["tank_level"].mean()), 1)
-            features["_press_std"] = stats.get("压力波动幅度_std_kPa", 0.0)
+            self.compute_diag_stats(df, stats, features)
             # 统计预鉴别：依据 stats 计算倾向根因，并入 LLM 候选集（防图谱召回漏检）
             extra_cands = self._stat_precheck(features, stats)
             try:
@@ -295,12 +279,86 @@ class WarningAnalysisAgent:
         return float(np.std(resid))
 
     @staticmethod
+    def compute_diag_stats(df: pd.DataFrame, stats: Dict,
+                           features: Optional[Dict] = None) -> None:
+        """计算尾窗（最近 120s）统计鉴别特征，原地写入 stats（必要时更新 features）。
+
+        批量路径（WarningAnalysisAgent.analyze）与实时流路径
+        （AgentService._diagnose_async）共用，保证两条诊断链路特征口径一致。
+
+        在基础窗口统计之外，补齐三类结垢(scale_buildup)专属鉴别特征：
+          * PQ特性偏移 —— 实测压力相对水力模型 P_model = P_s + R·Q² 的偏移百分比，
+            直接度量线圈侧阻抗抬升，是区分"线圈结垢"与"过滤器堵塞"的确定性依据；
+          * 进出水温差 —— 线圈侧温升的直接体现（热阻增大 → 同功率下温差拉大）；
+          * 单位电耗温升率 —— 炉温变化率 / 电功率，换热效率衰减前兆（炉温爬升速率）。
+        """
+        if features is None:
+            features = {}
+        tail = df.iloc[-120:] if len(df) >= 120 else df
+
+        if "pressure" in tail.columns:
+            stats["压力波动幅度_std_kPa"] = round(
+                WarningAnalysisAgent._detrended_std(tail["pressure"]), 2)
+            stats["压力均值_kPa"] = round(float(tail["pressure"].mean()), 1)
+        features["_press_std"] = stats.get("压力波动幅度_std_kPa", 0.0)
+
+        if "cabinet_humidity" in tail.columns:
+            stats["湿度均值_pctRH"] = round(float(tail["cabinet_humidity"].mean()), 1)
+            features["湿度"] = stats["湿度均值_pctRH"]
+            # 湿度上升趋势（泄漏早期信号）：尾段120s均值 - 前段120s均值
+            if len(df) >= 240:
+                head = df.iloc[-240:-120]
+                hum_delta = round(float(tail["cabinet_humidity"].mean())
+                                  - float(head["cabinet_humidity"].mean()), 1)
+                stats["湿度上升量_pctRH"] = hum_delta
+                features["_hum_delta"] = hum_delta
+        if "flow_rate" in tail.columns:
+            stats["流量均值_Lps"] = round(float(tail["flow_rate"].mean()), 2)
+        if "tank_level" in tail.columns:
+            stats["液位均值_cm"] = round(float(tail["tank_level"].mean()), 1)
+
+        # ---- 结垢(scale_buildup)专属鉴别特征 ----
+        # PQ 特性偏移度：线圈结垢使 r_coil 抬升，实测压力显著高于水力模型预测；
+        # 过滤器堵塞时线圈侧压力仍贴近模型，以此相对量区分二者。
+        if {"pressure", "flow_rate"} <= set(tail.columns):
+            try:
+                from tools.ts_features import pq_offset
+                off = pq_offset(tail["pressure"], tail["flow_rate"])
+                val = float(off.mean()) * 100.0
+                if math.isfinite(val):
+                    stats["PQ特性偏移_pct"] = round(val, 1)
+                    features["_pq_offset_pct"] = stats["PQ特性偏移_pct"]
+            except Exception:
+                pass
+        # 进出水温差：线圈热阻增大时同功率下温差拉大（线圈侧温升）
+        if {"inlet_temp", "outlet_temp"} <= set(tail.columns):
+            delta_t = round(float(tail["outlet_temp"].mean()
+                                  - tail["inlet_temp"].mean()), 1)
+            stats["进出水温差_℃"] = delta_t
+            features["_delta_t"] = delta_t
+        # 单位电耗温升率：炉温变化速率 / 平均电功率（换热效率衰减前兆）
+        if {"furnace_temp", "electric_power"} <= set(tail.columns):
+            try:
+                fv = tail["furnace_temp"].to_numpy(dtype=float)
+                pw = float(tail["electric_power"].mean())
+                if len(fv) >= 20 and pw > 500:
+                    rate_cpm = float(fv[-1] - fv[0]) / (len(fv) / 60.0)
+                    stats["单位电耗温升率_℃每分钟每kW"] = round(rate_cpm / pw, 5)
+            except Exception:
+                pass
+
+    @staticmethod
     def _stat_precheck(features: Dict, stats: Dict) -> List[str]:
         """统计预鉴别：返回倾向根因列表（与提示词判定规则一致）。
 
         泄漏早期判定：湿度绝对值可能未达 70%RH，但"湿度上升趋势"(Δhum)
         是水汽逸散的铁证——堵塞时湿度基本不变。结合压力/流量下降联动，
         可在泄漏爬升前期即正确区分泄漏与堵塞。
+
+        堵塞/结垢判定：改用 PQ 特性偏移（相对量）而非压力绝对阈值——
+        线圈结垢使线圈侧阻抗抬升，实测压力显著高于水力模型预测(P_model=P_s+R·Q²)；
+        过滤器堵塞只增大过滤器段阻抗，线圈侧压力仍贴近模型。
+        原"压力>230kPa 即结垢"的绝对阈值会随故障严重度/爬坡进度漂移而失效。
         """
         out = []
         hum = float(stats.get("湿度均值_pctRH", 50.0))
@@ -308,13 +366,20 @@ class WarningAnalysisAgent:
         press = float(stats.get("压力均值_kPa", features.get("压力", 240.0)))
         press_std = float(stats.get("压力波动幅度_std_kPa", 0.0))
         flow = float(stats.get("流量均值_Lps", features.get("流量", 8.0)))
+        pq = float(stats.get("PQ特性偏移_pct", 0.0) or 0.0)
+        delta_t = float(stats.get("进出水温差_℃", 0.0) or 0.0)
         # 泄漏：湿度高 或 湿度持续上升趋势(>4%RH)伴随流量/压力下降（爬升早期即可识别）
         if hum > 70 or (hum_delta > 4.0 and (flow < 7.8 or press < 240)):
             out.append("管道泄漏")
         elif press_std > 3.0:
             out.append("水泵气蚀")
         if flow < 6.4 and "管道泄漏" not in out:
-            out.append("线圈结垢" if press > 230 else "过滤器堵塞")
+            # PQ 偏移 ≥ +10% → 线圈阻抗显著抬升 → 线圈结垢；否则为过滤器堵塞
+            out.append("线圈结垢" if pq >= 10.0 else "过滤器堵塞")
+        elif flow >= 6.4 and delta_t > 20.0 and hum_delta <= 4.0 \
+                and "线圈结垢" not in out:
+            # 温差超标且湿度正常：线圈热阻增大的表现（流量尚未明显下降的早期结垢）
+            out.append("线圈结垢")
         return out
 
 
