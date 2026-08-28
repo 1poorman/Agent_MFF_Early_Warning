@@ -66,6 +66,7 @@ class AgentService:
             logger.warning("时序数据库不可用: %s", e)
         # 实时流日志缓冲（供 stream/logs 查询，未启动流时返回空）
         self.reset_stream()
+        self.rule_engine.reset()
         logger.info("服务初始化完成 | use_llm=%s fast_models=%s anomaly=%s tsdb=%s",
                     use_llm, list(self.pipeline.fast_models.keys()),
                     self.pipeline.detector is not None, self.tsdb_ok)
@@ -164,6 +165,9 @@ class AgentService:
 
     def reset_stream(self, max_points: int = 20000):
         """重置实时流缓冲（支持预加载 GRU 所需 4.6h=16800 点）。"""
+        # 规则引擎滑动窗口同步清空（压力震荡检测带跨流状态）
+        if getattr(self, "rule_engine", None) is not None:
+            self.rule_engine.reset()
         self.stream_buf = []                 # 预加载 + 实时数据（含 GRU 窗口）
         self.stream_max = max_points
         self.l1_log = []                     # L1 预警日志

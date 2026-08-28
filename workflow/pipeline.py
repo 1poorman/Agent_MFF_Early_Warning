@@ -28,6 +28,7 @@ from reasoning import KnowledgeGraph, LLMClient, RootCauseReasoner
 RULE_TO_SENSOR = {
     "OUTLET_TEMP_HIGH": "出水温度", "INLET_TEMP_HIGH": "进水温度",
     "DELTA_T_HIGH": "出水温度", "PRESSURE_LOW": "压力", "PRESSURE_HIGH": "压力",
+    "PRESSURE_OSC": "压力",
     "FLOW_LOW": "流量", "FLOW_HIGH": "流量", "CONDUCTIVITY_HIGH": "电导率",
     "DEW_MARGIN_LOW": "湿度", "COMBO_LEAK_SUSPECT": "压力",
 }

@@ -11,6 +11,7 @@
 批量/带状态判定走 evaluate()（季节阈值、衍生特征、凝露趋势）。
 """
 
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -43,6 +44,8 @@ class RuleThresholds:
     dew_margin_warn_c: float = 3.0        # 凝露裕度 ℃
     heat_rate_drift: float = 0.15         # 单位电耗温升率漂移 15%
     pq_offset_limit: float = 0.10         # P-Q 特性偏移 10%
+    pressure_osc_std_kpa: float = 3.0     # 压力震荡阈值（去趋势 std kPa，气蚀特征）
+    pressure_osc_window: int = 60         # 压力震荡检测滑动窗口（秒）
 
     @classmethod
     def from_settings(cls) -> "RuleThresholds":
@@ -76,6 +79,36 @@ class RuleEngine:
     def __init__(self, thresholds: Optional[RuleThresholds] = None):
         self.th = thresholds or RuleThresholds()
         self.dew = CondensationPredictor(margin_warn_c=self.th.dew_margin_warn_c)
+        # 压力震荡检测的流式滑动窗口（气蚀特征：去趋势 std，不依赖系统级状态）
+        self._press_hist: deque = deque(maxlen=max(int(self.th.pressure_osc_window), 10))
+
+    def reset(self) -> None:
+        """清空带状态的滑动窗口（新一轮监测开始时调用）。"""
+        self._press_hist.clear()
+
+    @staticmethod
+    def _detrended_std(values: List[float]) -> Optional[float]:
+        """剔除线性趋势后残差 std（专测震荡幅度，爬升趋势不计入）。"""
+        v = np.asarray(values, dtype=float)
+        if len(v) < 10:
+            return None
+        t = np.arange(len(v))
+        slope, intercept = np.polyfit(t, v, 1)
+        resid = v - (slope * t + intercept)
+        return float(np.std(resid))
+
+    def _pressure_oscillation(self, pressure: Optional[float]) -> Optional[float]:
+        """更新压力滑窗并返回当前窗口的去趋势 std（样本不足返回 None）。"""
+        if pressure is None:
+            return None
+        try:
+            p = float(pressure)
+        except (TypeError, ValueError):
+            return None
+        if not np.isfinite(p):
+            return None
+        self._press_hist.append(p)
+        return self._detrended_std(list(self._press_hist))
 
     # ---------------- 单条判定（<10ms） ----------------
 
@@ -127,6 +160,14 @@ class RuleEngine:
         # 组合逻辑：压力偏低 + 湿度高 → 疑似泄漏（压力阈值 180kPa 覆盖泄漏中期）
         if row["pressure"] < 180.0 and row["cabinet_humidity"] > 70.0:
             add("COMBO_LEAK_SUSPECT", "压力偏低 且 湿度>70%RH：疑似管路泄漏", row["pressure"])
+
+        # 压力震荡（气蚀特征）：滑动窗口去趋势 std 超阈（绝对阈值规则对围绕
+        # 正常带的低频振荡失明，气蚀典型振幅 6~12kPa、正常≈0.5kPa，区分度充分）
+        osc = self._pressure_oscillation(row.get("pressure"))
+        if osc is not None and osc > th.pressure_osc_std_kpa:
+            add("PRESSURE_OSC",
+                f"压力波动 {osc:.1f}kPa 超 {th.pressure_osc_std_kpa:.0f}kPa（去趋势）：疑似水泵气蚀",
+                round(osc, 2))
 
         return alerts
 

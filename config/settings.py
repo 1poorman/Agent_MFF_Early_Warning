@@ -140,6 +140,8 @@ class RuleSettings:
     dew_margin_warn_c: float = 3.0
     heat_rate_drift: float = 0.15
     pq_offset_limit: float = 0.10
+    pressure_osc_std_kpa: float = 3.0      # 压力震荡阈值（去趋势 std，气蚀特征）
+    pressure_osc_window: int = 60          # 震荡检测滑动窗口（秒）
 
 
 @dataclass

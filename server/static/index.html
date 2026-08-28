@@ -618,13 +618,23 @@ async function startStream(){
     const proto = location.protocol==='https:'?'wss':'ws';
     ws = new WebSocket(`${proto}://${location.host}/ws/stream`);
     ws.onopen = ()=>{
+      const faultSel = document.getElementById('fault').value;
+      // 有上传数据源则回放该数据（数据源即故障场景）；否则用物理仿真 + 故障注入
+      const useUpload = uploadedData !== null;
+      // 自定义上传场景未就绪（文件仍在解析/或未上传成功）→ 拦截启动，
+      // 避免 fault=custom 透传给仿真器导致流异常退出
+      if(faultSel === 'custom' && !useUpload){
+        alert('自定义上传尚未就绪：请等待上传完成提示后再开始监测');
+        ws.close(); ws=null;
+        document.getElementById('run-status').innerHTML='<span class="badge b-warn">未就绪</span>';
+        document.getElementById('btn-start').disabled=false;
+        return;
+      }
       document.getElementById('run-status').innerHTML='<span class="badge b-run">监测中</span>';
       document.getElementById('btn-start').disabled=true;
       document.getElementById('btn-stop').disabled=false;
-      // 有上传数据源则回放该数据（数据源即故障场景）；否则用物理仿真 + 故障注入
-      const useUpload = uploadedData !== null;
       ws.send(JSON.stringify({
-        fault: useUpload ? null : (document.getElementById('fault').value||null),
+        fault: useUpload ? null : (faultSel||null),
         speed: +document.getElementById('speed').value,
         duration: useUpload ? (uploadedData.points||1800) : 1800,
         fault_start: 300,
@@ -635,16 +645,38 @@ async function startStream(){
     ws.onmessage = (e)=>{
       const d = JSON.parse(e.data);
       if(d.done){ gracefulDone(); return; }
-      if(d.error){ console.error(d.error); return; }
+      if(d.error){
+        console.error(d.error);
+        const st=document.getElementById('run-status');
+        st.innerHTML='<span class="badge b-warn">流错误</span>';
+        stopStream();
+        alert('监测中断：' + d.error);
+        return;
+      }
+      if(d.notice){                          // 服务端降级提示（如忽略无效故障名）
+        console.warn(d.notice);
+        const st=document.getElementById('run-status');
+        st.innerHTML='<span class="badge b-warn">已降级</span>';
+        document.getElementById('forecast-msg').textContent = d.notice;
+        return;
+      }
       if(d.preload){                       // 预加载阶段
-        document.getElementById('forecast-msg').innerHTML = `预加载历史数据 ${d.points} 点（${d.forecast_model||'GRU'} 窗口）...`;
-        document.getElementById('forecast-msg').style.color='#ffae42';
+        const fm=document.getElementById('forecast-msg');
+        if(d.data_source==='upload'){      // 上传回放：无预载段，提示预测启用条件
+          fm.innerHTML = `数据源 ${d.filename||''} 回放中 · 出水温度预测将在缓冲 ≥<b>${d.forecast_ready_at||'—'}</b> 点后自动启用`;
+          fm.style.color='#5ec1ff';
+        }else{
+          fm.innerHTML = `预加载历史数据 ${d.points} 点（${d.forecast_model||'GRU'} 窗口）...`;
+          fm.style.color='#ffae42';
+        }
         return;
       }
       if(d.preload_done){                  // 预加载完成，启动实时分析
-        document.getElementById('forecast-msg').innerHTML =
-          `预加载完成 ${d.points} 点，开始实时分析（${d.forecast_model||'GRU'} 就绪）`;
-        document.getElementById('forecast-msg').style.color='#5ee08a';
+        if(d.data_source!=='upload'){
+          document.getElementById('forecast-msg').innerHTML =
+            `预加载完成 ${d.points} 点，开始实时分析（${d.forecast_model||'GRU'} 就绪）`;
+          document.getElementById('forecast-msg').style.color='#5ee08a';
+        }
         return;
       }
       pushPoint(d);

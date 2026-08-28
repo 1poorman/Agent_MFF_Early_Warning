@@ -428,12 +428,23 @@ async def stream_ws(ws: WebSocket):
         if data_source == "upload":
             rows = s.uploaded_data or []
             if not rows:
-                await ws.send_json({"error": "未找到已上传数据，请先上传时序数据文件"})
+                # 服务端上传缓存为空（如服务重启清空内存态）：发错误+结束帧，
+                # 让前端立即恢复按钮状态而不是挂着无输出
+                await ws.send_json({"error": "未找到已上传数据（服务可能已重启），请重新上传"})
+                await ws.send_json({"done": True, "points": 0, "data_source": "upload",
+                                    "hint": "uploaded_data_missing"})
+                logger.warning("回放请求缺少已上传数据（服务重启导致缓存丢失）")
                 return
             logger.info("回放上传数据源 | %s 条=%d", s.uploaded_meta.get("filename", ""), len(rows))
+            # 上传路径无服务端预加载段：回 preload+preload_done 让前端提示切换为
+            # "回放中 + 预测启用条件"（缺失会导致界面永远停留在"预加载历史数据"）
+            forecast_ready_at = engine.backend_window() if engine is not None else 0
             await ws.send_json({"preload": True, "points": 0, "forecast_model": model_name,
                                 "data_source": "upload",
+                                "forecast_ready_at": forecast_ready_at,
                                 "filename": s.uploaded_meta.get("filename", "")})
+            await ws.send_json({"preload_done": True, "points": s.preloaded,
+                                "forecast_model": model_name, "data_source": "upload"})
             # 从头逐条回放：曲线从第 1 条开始实时显示（不跳过预加载段）；
             # stream_step 内部按窗口就绪才产出 L2 预测/L3 诊断，曲线始终连续
             interval = 1.0 / max(speed, 1.0)
@@ -451,8 +462,18 @@ async def stream_ws(ws: WebSocket):
         from simulator import DataSimulator, FaultSpec, SimConfig
         # 预加载量 = 当前预测后端窗口（GRU 16800s=4.6h / PatchTST 7200s / TimesFM 1024s）
         warmup_s = engine.backend_window() if engine is not None else 16800
-        faults = [FaultSpec(name=fault, start=warmup_s + fault_start, ramp=300, severity=0.9)] \
-            if fault else []
+        # 容错：无效故障名（如前端误传 "custom"，常见于上传未就绪即点开始监测）
+        # 不再抛异常断流，降级为正常工况运行并提示
+        faults = []
+        if fault:
+            from simulator.faults import FAULT_REGISTRY
+            if fault in FAULT_REGISTRY:
+                faults = [FaultSpec(name=fault, start=warmup_s + fault_start,
+                                    ramp=300, severity=0.9)]
+            else:
+                logger.warning("忽略未知故障类型 %r（按正常工况运行）", fault)
+                await ws.send_json({
+                    "notice": f"已忽略无效故障场景 {fault}，按正常工况运行"})
         sim = DataSimulator(config=SimConfig(seed=42), faults=faults)
 
         # ---- 预加载阶段：填充缓冲不推送，界面提示 ----

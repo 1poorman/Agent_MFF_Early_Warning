@@ -112,6 +112,8 @@ rules:
   dew_margin_warn_c: 3.0         # 凝露裕度 ℃
   heat_rate_drift: 0.15          # 单位电耗温升率漂移 15%
   pq_offset_limit: 0.10          # P-Q 特性偏移 10%
+  pressure_osc_std_kpa: 3.0      # 压力震荡阈值：滑动窗口去趋势 std（气蚀特征，正常≈0.5，气蚀≈6-12）
+  pressure_osc_window: 60        # 压力震荡检测滑动窗口（秒）
 
 # ---------------- L2 检测 / 实时流 ----------------
 detection:
