@@ -48,6 +48,14 @@ llm:
   timeout: 60.0                  # 推理超时（秒）
   # max_tokens 使用代码默认值：chat 默认 1500，L3 根因推理路径固定 4000
   temperature: 0.2
+  # ---- MS6 级联：2B SFT 前置 + 27B 兜底（蓝图 4.2）----
+  # cascade_enabled=false（默认）时与级联前完全一致（仅 url/27B 单模型）；
+  # 置 true 且 small_diag_url 可用时，先走 2B SFT（关仲裁），
+  # 仅在「JSON解析失败 / 防幻觉校验不过 / 端点异常」时升级 27B（不依赖模型自报置信度）。
+  cascade_enabled: false
+  small_diag_url: http://localhost:3761/v1   # 2B SFT 前置服务（本地 vLLM，tools/serve_sft.sh）
+  small_diag_model: mff-sft-minicpm5-2b      # SFT 产物 served-model-name
+  small_diag_key: empty
 
 # ---------------- 时序数据库（PostgreSQL）----------------
 database:

@@ -17,7 +17,10 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
+from config import get_logger
 from .service import AgentService
+
+logger = get_logger("server.agents")
 
 
 def _json_safe(obj: Any) -> Any:
@@ -240,6 +243,11 @@ class WarningAnalysisAgent:
                     },
                     stats=stats, extra_candidates=extra_cands)
             except Exception:
+                # L3 诊断本身对端点异常已优雅降级（返回 manual_required 结果，不抛出）；
+                # 走到这里说明是**非预期**错误（组包/依赖 bug），必须显式记录，
+                # 不得静默吞掉。仍回退规则兜底以保证工作流不中断。
+                logger.exception("L3 诊断异常，回退规则兜底 | condition=%s sensors=%s",
+                                 condition, sensors)
                 diag = self.svc.pipeline._fallback_diagnose(sensors, features)
             diagnosis = diag.to_dict()
             # 附加诊断上下文：判断依据（L1/L2 上报 + 特征值 + 统计特征 + 维修记录）
@@ -472,9 +480,13 @@ class ContinuousOptimizerAgent:
                  work_order: Optional[Dict] = None) -> Dict:
         """接收故障处置反馈，归档训练样本并按需更新知识库。"""
         s = self.svc
-        snapshot = {"work_order": work_order} if work_order else None
+        # 回填按工单号缓存的诊断快照（含输入 prompt + 模型输出）并附工单，供 DPO 偏好对
+        snapshot = dict(s._diag_snapshots.get(order_id) or {})
+        if work_order:
+            snapshot["work_order"] = work_order
         s.submit_feedback(order_id, actual_root_cause, is_true_fault,
-                          handling_time_min, effect)
+                          handling_time_min, effect,
+                          diagnosis_snapshot=snapshot or None)
         out = {
             "agent": "continuous_optimizer",
             "archived": True,

@@ -65,6 +65,13 @@ class LLMSettings:
     timeout: float = 60.0
     max_tokens: int = 1500
     temperature: float = 0.2
+    # ---- MS6 级联：2B SFT 前置端点（本地 vLLM）----
+    # 级联架构（蓝图 4.2）：small_diag（2B SFT，前置，非思考）+ url（27B，兜底）。
+    # cascade_enabled=false 时行为与级联前完全一致（仅用 url/27B 单模型）。
+    cascade_enabled: bool = False
+    small_diag_url: str = ""                 # 2B SFT 前置服务地址 <url>/v1
+    small_diag_model: str = "mff-sft-minicpm5-2b"
+    small_diag_key: str = "empty"
 
     def to_client_dict(self) -> Dict[str, Any]:
         """转换为 reasoning.llm_client.LLMClient 接受的 config dict。"""
@@ -75,6 +82,10 @@ class LLMSettings:
             "api_key": self.api_key, "base_url": self.base_url,
             "enable_thinking": self.enable_thinking,
             "timeout": self.timeout,
+            "cascade_enabled": self.cascade_enabled,
+            "small_diag_url": self.small_diag_url,
+            "small_diag_model": self.small_diag_model,
+            "small_diag_key": self.small_diag_key,
         }
 
 

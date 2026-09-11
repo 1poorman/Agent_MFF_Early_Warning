@@ -4,7 +4,7 @@ from .knowledge_graph import KnowledgeGraph
 from .llm_client import LLMClient, load_env_config
 from .root_cause import RootCauseReasoner, DiagnosisResult
 from .anti_hallucination import AntiHallucinationChecker
-from .confidence import ConfidenceGate
+from .confidence import ConfidenceGate, CascadeGate
 
 __all__ = [
     "KnowledgeGraph",
@@ -14,4 +14,5 @@ __all__ = [
     "DiagnosisResult",
     "AntiHallucinationChecker",
     "ConfidenceGate",
+    "CascadeGate",
 ]

@@ -5,6 +5,7 @@
 """
 
 import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -51,6 +52,10 @@ class AgentService:
         # 实时数据缓存（供界面展示）
         self.latest_window: Optional[pd.DataFrame] = None
         self.latest_result = None
+        # 诊断快照缓存（order_id -> DiagnosisResult.training_snapshot()）：
+        # 反馈归档时按工单号回填含 prompt 的快照，供 DPO 偏好对构造（MS6/MS7 前置）
+        self._diag_snapshots: "OrderedDict[str, Dict]" = OrderedDict()
+        self._diag_snapshots_cap = 200
         # 上传时序数据源（用户上传后作为监测数据源，点击开始监测才运行四大智能体）
         self.uploaded_data: Optional[List[Dict]] = None
         self.uploaded_meta: Optional[Dict] = None
@@ -84,9 +89,21 @@ class AgentService:
         reasoner = None
         if use_llm:
             try:
-                reasoner = RootCauseReasoner(LLMClient(config=cfg.llm.to_client_dict()),
-                                             KnowledgeGraph())
+                llm_cfg = cfg.llm.to_client_dict()
+                kg = KnowledgeGraph()
+                if cfg.llm.cascade_enabled and cfg.llm.small_diag_url:
+                    # MS6 级联：2B SFT 前置（关仲裁）+ 27B 兜底（升级不依赖模型置信度）
+                    reasoner = RootCauseReasoner(
+                        llm=LLMClient.front(config=llm_cfg), kg=kg,
+                        fallback_llm=LLMClient(config=llm_cfg, prefer="big"),
+                        arbitrate=True)
+                    logger.info("L3 级联已启用 | 前置=%s(%s) 兜底=%s(%s)",
+                                cfg.llm.small_diag_model, cfg.llm.small_diag_url,
+                                cfg.llm.big_model_name, cfg.llm.url)
+                else:
+                    reasoner = RootCauseReasoner(LLMClient(config=llm_cfg), kg)
             except Exception:
+                logger.exception("L3 推理器初始化失败，禁用 LLM 诊断")
                 use_llm = False
         pipeline = EarlyWarningPipeline(fast_models=fast, anomaly_detector=det,
                                         reasoner=reasoner, use_llm=use_llm,
@@ -414,6 +431,8 @@ class AgentService:
                                      sensors, stats=stats, extra_candidates=extra_cands,
                                      diag_context=diag_ctx)
             except Exception:
+                # diagnose 对端点异常已优雅降级（不抛出）；此处捕获非预期错误须显式记录
+                logger.exception("L3 诊断异常（实时流），回退规则兜底 | condition=%s", condition)
                 diag = self.pipeline._fallback_diagnose(sensors, features)
                 diag.confidence = min(diag.confidence, 0.65)
             diag_dict = diag.to_dict()
@@ -463,6 +482,8 @@ class AgentService:
                 wo = fh.handle(analysis)
                 if wo.get("handled"):
                     self.wo_issued = True      # 工单已发，禁止重复
+                    # 按工单号缓存诊断快照（含 prompt/output），供反馈归档回填（DPO 前置）
+                    self.cache_diag_snapshot(wo["order_id"], diag)
                     self.fh_log.append({"order_id": wo["order_id"], "level": wo["level"],
                                         "root_cause": wo["root_cause"]})
                     logger.info("故障处置工单生成 | order_id=%s level=%s root_cause=%s",
@@ -552,8 +573,19 @@ class AgentService:
             return self.pipeline.reasoner.diagnose(report=report, sensor_names=sensor_names)
         return self.pipeline._fallback_diagnose(sensor_names or list(features.keys()), features)
 
+    def cache_diag_snapshot(self, order_id: str, diag) -> None:
+        """按工单号缓存诊断快照（含 prompt/output），供反馈归档回填（DPO 前置）。"""
+        if not order_id or diag is None or not hasattr(diag, "training_snapshot"):
+            return
+        self._diag_snapshots[order_id] = diag.training_snapshot()
+        while len(self._diag_snapshots) > self._diag_snapshots_cap:
+            self._diag_snapshots.popitem(last=False)  # FIFO 淘汰最旧
+
     def submit_feedback(self, order_id, actual_root_cause, is_true_fault,
-                        handling_time_min, effect):
+                        handling_time_min, effect, diagnosis_snapshot=None):
+        # 快照优先用显式传入，否则按工单号回填缓存的诊断快照（含输入 prompt）
+        snap = diagnosis_snapshot or self._diag_snapshots.get(order_id)
         self.feedback_store.archive(
-            Feedback(order_id, actual_root_cause, is_true_fault, handling_time_min, effect))
+            Feedback(order_id, actual_root_cause, is_true_fault, handling_time_min, effect),
+            diagnosis_snapshot=snap)
         return self.feedback_store.stats()

@@ -24,7 +24,10 @@ from typing import Any, Dict
 ENV_PREFIX = "MFF_"
 # .env 中归属 llm 段的键（兼容 reasoning/llm_client.py 的 key: value 风格）
 LLM_ENV_KEYS = {"url", "key", "big_model_name", "small_model_name",
-                "api_key", "base_url"}
+                "api_key", "base_url",
+                # MS6 级联：2B SFT 前置端点（敏感/环境相关，随 .env 走）
+                "cascade_enabled", "small_diag_url", "small_diag_model",
+                "small_diag_key"}
 
 _BOOL_TRUE = {"true", "yes", "on", "1"}
 _BOOL_FALSE = {"false", "no", "off", "0"}
@@ -124,7 +127,8 @@ def _load_env_llm(env_path: str = ".env") -> Dict[str, Any]:
         k, _, v = line.partition(":")
         k, v = k.strip(), v.strip()
         if k in LLM_ENV_KEYS:
-            cfg[k] = v
+            # cascade_enabled 需 bool 语义（.env 值为裸字符串），其余键保持字符串
+            cfg[k] = _parse_scalar(v) if k == "cascade_enabled" else v
     return cfg
 
 
