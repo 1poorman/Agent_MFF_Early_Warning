@@ -299,7 +299,7 @@ from reasoning.llm_client import LLMClient
 from reasoning.root_cause import RootCauseReasoner
 
 llm = LLMClient(config={
-    "url": "http://localhost:9998/v1",   # 新模型 vLLM 服务
+    "url": "http://localhost:3761/v1",   # 新模型 vLLM 服务
     "key": "empty",
     "big_model_name": "mff-qwen-sft-merged",
     "enable_thinking": False,             # 必须与线上一致！
@@ -334,8 +334,8 @@ reasoner = RootCauseReasoner(llm=llm)
 conda activate sft
 vllm serve /data/models/mff-qwen-sft-merged \
   --served-model-name mff-qwen-sft \
-  --port 9998 --max-model-len 8192
-# 探活：curl http://localhost:9998/v1/models
+  --port 3761 --max-model-len 8192
+# 探活：curl http://localhost:3761/v1/models
 ```
 
 注意：本项目 `LLMClient` 通过 `chat_template_kwargs: {"enable_thinking": false}` 关思考（`llm_client.py:78-79`），vLLM 原生支持该透传，合并后的权重保留了 Qwen3 chat template，行为一致。
@@ -349,7 +349,7 @@ vllm serve /data/models/mff-qwen-sft-merged \
 # 全量：确认后替换 url/big_model_name 指向新端点
 ```
 
-推荐**双端点并行**一段时间：保留旧 27B 端点不动，新开 9998 端口服务 SFT 模型，通过 `.env` 切换，回归有问题 30 秒内改回。
+推荐**双端点并行**一段时间：保留旧 27B 端点不动，新开 3761 端口服务 SFT 模型，通过 `.env` 切换，回归有问题 30 秒内改回。
 
 ### 6.3 提示词的渐进退役（重要，勿一步到位）
 
@@ -376,7 +376,7 @@ llamafactory-cli export \
 
 # 3. vLLM 服务量化版
 vllm serve /data/models/mff-qwen-sft-int4 \
-  --served-model-name mff-qwen-sft-int4 --port 9998 --max-model-len 8192
+  --served-model-name mff-qwen-sft-int4 --port 3761 --max-model-len 8192
 ```
 
 **量化前后都要跑一遍第 5.3 节评估集**：量化对边界样本（湿度 65~70%RH、PQ 偏移 8~12%）的鉴别可能有可测的精度损失，若混淆对准确率量化后掉 >3 个百分点，则放弃量化、直接部署 bf16 版（27B bf16 单卡放不下，可 2 卡张量并行：`vllm serve ... --tensor-parallel-size 2`）。
@@ -457,14 +457,14 @@ llamafactory-cli export --model_name_or_path <底座> \
   --export_dir /data/models/mff-qwen-sft-merged
 
 # ── 评估（先起新模型服务）──
-vllm serve /data/models/mff-qwen-sft-merged --served-model-name mff-qwen-sft --port 9998 --max-model-len 8192
-conda run -n mff_agent python tests/eval_sft_model.py --url http://localhost:9998/v1
+vllm serve /data/models/mff-qwen-sft-merged --served-model-name mff-qwen-sft --port 3761 --max-model-len 8192
+conda run -n mff_agent python tests/eval_sft_model.py --url http://localhost:3761/v1
 
 # ── （可选）INT4 量化部署，对齐线上小模型规格，量化后必须复跑评估 ──
 # 见 6.5：export --export_quantization_bit 4 → vllm serve mff-qwen-sft-int4
 
 # ── 上线切换（改 .env 后重启 uvicorn；big 链路指向新端点）──
-# url: http://<host>:9998/v1
+# url: http://<host>:3761/v1
 # big_model_name: mff-qwen-sft   # .env 的模型名需与 --served-model-name 一致
 uvicorn server.api:app --host 0.0.0.0 --port 8000
 ```

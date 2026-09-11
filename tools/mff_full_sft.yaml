@@ -1,0 +1,56 @@
+### MS4 全参 SFT：MiniCPM5-2B 中频炉水冷系统根因诊断
+### 参考 docs/SFT_MILESTONES.md（MS4） / docs/LLM_SFT后训练实施指南.md（第 4 节）
+###
+### 关键决策（已在 docs/SFT_STATUS.md MS4 待确认点闭环）：
+###  - template: minicpm5 —— 模型自带 chat_template.jinja 用的就是 <think>/</think>
+###    （非 <|thought_begin|>），与 LLaMA-Factory 注册时未传 thought_words 的默认值
+###    ("<think>\n", "\n</think>\n\n") 完全一致；
+###  - enable_thinking: false —— 与线上推理路径 LLMClient(enable_thinking=False)
+###    → vLLM chat_template_kwargs={enable_thinking:false} 的渲染逐 token 等价
+###    （空思考块进 prompt、不计 loss），故无需也不存在 minicpm5_nothink。
+###  - 启动前必须跑 tools/check_lf_template.py 做字节级比对（MS4 验收标准 2）。
+
+model_name_or_path: /home/huachenghao/models/MiniCPM5-2B
+trust_remote_code: true
+
+stage: sft
+do_train: true
+finetuning_type: full
+
+template: minicpm5
+enable_thinking: false
+
+dataset: mff_diag_train
+eval_dataset: mff_diag_val
+cutoff_len: 4096              # 实测最长 1080 token，仅作上界
+preprocessing_num_workers: 8
+dataloader_num_workers: 4
+overwrite_cache: true
+
+output_dir: /home/huachenghao/codes/Agent_MFF_Early_Warning/saves/mff-sft-full
+logging_steps: 10
+save_steps: 200
+eval_steps: 200
+save_total_limit: 3
+plot_loss: true
+overwrite_output_dir: true
+report_to: none
+
+per_device_train_batch_size: 2
+gradient_accumulation_steps: 8      # 有效 batch = 16
+per_device_eval_batch_size: 4
+
+learning_rate: 1.0e-5               # 全参用 1e-5（LoRA 才用 1e-4）
+num_train_epochs: 3.0
+lr_scheduler_type: cosine
+warmup_ratio: 0.1
+weight_decay: 0.0
+max_grad_norm: 1.0
+bf16: true
+pure_bf16: true                    # 关键：不把可训练参数升 fp32。
+                                   # 升 fp32 后 params 10GB + grads 10GB 就 20GB，
+                                   # 24GB 单卡必 OOM（实测 23.5GB 首步即爆）。
+                                   # pure_bf16 下显存 ≈ params 5 + grads 5 + 8bit优化器 2.5 ≈ 13GB。
+gradient_checkpointing: true
+optim: paged_adamw_8bit             # 2B 全参：8bit 优化器态 ~2.5GB
+seed: 42

@@ -1,0 +1,12 @@
+### MS4 导出：全参 SFT 权重合并导出（full 微调无 adapter，等价于按模板重整后另存）
+### 用法（训练结束后）：
+###   conda run -n mff_sft llamafactory-cli export tools/mff_export.yaml
+### 校验：tools/verify_export.py
+model_name_or_path: /home/huachenghao/codes/Agent_MFF_Early_Warning/saves/mff-sft-full
+template: minicpm5
+trust_remote_code: true
+
+export_dir: /home/huachenghao/models/mff-sft-minicpm5-2b
+export_size: 5
+export_device: cpu          # 导出走 CPU，不占 GPU
+export_legacy_format: false
