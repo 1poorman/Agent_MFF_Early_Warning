@@ -51,3 +51,9 @@ models/
 
 # ---- 测试文件 ----
 tests/
+
+# ---- 测试结果文件 ----
+saves/
+
+# ---- API配置文件 ----
+opencode.json
