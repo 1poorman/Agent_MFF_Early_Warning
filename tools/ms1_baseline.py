@@ -186,6 +186,12 @@ def main():
     ap.add_argument("--url", default="http://localhost:3761/v1")
     ap.add_argument("--model", default="MiniCPM5-2B")
     ap.add_argument("--out", default="data/sft/ms1_baseline_results.jsonl")
+    ap.add_argument("--cascade", choices=["as-is", "off"], default="as-is",
+                    help="off=禁用 27B 兜底，强制单模型路径。"
+                         "2026-09-09 的 2B MS1 基线跑在级联引入（MS6，09-11）之前，"
+                         "是**纯单模型**口径；之后若要用本脚本与新模型做同口径对照，"
+                         "必须传 --cascade off，否则 27B 兜底会救回大量样本，"
+                         "测出来的不是该模型自己的能力。")
     args = ap.parse_args()
 
     # ---- 服务栈（读线上同款配置，模型权重已在 models/）----
@@ -198,6 +204,11 @@ def main():
         "enable_thinking": False, "timeout": 180.0})
     rec = RecordingLLM(local_llm)
     svc.pipeline.reasoner.llm = rec  # 仅换端点，组包/仲裁逻辑不动
+    if args.cascade == "off":
+        # 强制单模型路径：RootCauseReasoner.diagnose() 见 fallback_llm=None 即不走级联
+        svc.pipeline.reasoner.fallback_llm = None
+        print("[ms1] cascade=off —— 已置 fallback_llm=None，强制单模型口径"
+              "（与 2026-09-09 的 2B MS1 基线同口径）", flush=True)
 
     results = []
 
