@@ -108,7 +108,9 @@ class RootCauseReasoner:
         kg_facts = "；".join(
             f"{c}的关联处置: {','.join(self.kg.actions_for_fault(c)) or '无'}" for c in candidates
         )
-        l1 = report.get("l1_alerts", [])
+        # L1 高频规则会在一个窗口产生数百条重复告警；只保留最近 10 条，
+        # 避免把重复证据灌入 2B/27B prompt，拖慢首 token 并挤压统计特征。
+        l1 = report.get("l1_alerts", [])[-10:]
         l1_text = "\n".join(f"- [{a.get('rule_id')}] {a.get('message')}" for a in l1) or "无"
         l2 = report.get("l2_forecast", {})
         l2_text = "\n".join(f"- {k}: {v}" for k, v in l2.items()) or "无"
@@ -218,12 +220,14 @@ class RootCauseReasoner:
         """2B SFT 前置（关仲裁）→ 仅在可验证信号命中时升级 27B（不依赖模型置信度）。"""
         # 前置 2B：关仲裁，信任 SFT 原始输出（报告 §8.1）
         front = self._run_model(report, sensors, candidates, kg_top1, features,
-                                arbitrate=False, llm=self.llm)
+                                arbitrate=False, llm=self.llm, max_tokens=1000)
         front.tier = "front_2b"
         decision = self.cascade_gate.decide(
             parse_ok=front.parse_ok,
             check_passed=bool(front.check and front.check.passed),
-            endpoint_error=front.endpoint_error or None)
+            endpoint_error=front.endpoint_error or None,
+            root_cause=front.root_cause,
+            expected_candidates=report.get("extra_candidates", []))
         front.upgrade_reason = decision.reason
         if not decision.upgrade:
             # 2B 直出：gate 仅用于呈现分级，不因 2B 未校准置信度转人工（决策 B）
@@ -231,7 +235,7 @@ class RootCauseReasoner:
             return front
         # 升级 27B：含仲裁 + 重试（原鲁棒路径）
         fb = self._run_model(report, sensors, candidates, kg_top1, features,
-                             arbitrate=True, llm=self.fallback_llm)
+                             arbitrate=True, llm=self.fallback_llm, max_tokens=512)
         fb.tier = "fallback_27b"
         fb.upgraded = True
         fb.upgrade_reason = decision.reason
@@ -241,7 +245,7 @@ class RootCauseReasoner:
 
     def _run_model(self, report: Dict, sensors: List[str], candidates: List[str],
                    kg_top1: str, features: Dict, *, arbitrate: bool,
-                   llm: LLMClient) -> DiagnosisResult:
+                   llm: LLMClient, max_tokens: int = 4000) -> DiagnosisResult:
         """对单个端点做「推理→（可选）仲裁→防幻觉校验→重试」，返回结果。
 
         arbitrate=True 时启用代码仲裁（27B 兜底/单模型）；arbitrate=False 时信任
@@ -253,7 +257,7 @@ class RootCauseReasoner:
         for attempt in range(MAX_RETRY):
             prompt = self._build_prompt(report, candidates, hint)
             try:
-                raw = llm.chat(prompt, max_tokens=4000, temperature=0.1)
+                raw = llm.chat(prompt, max_tokens=max_tokens, temperature=0.1)
             except Exception as e:  # 端点不可用/超时：占位结果 + 端点异常标记
                 return DiagnosisResult(
                     kg_top1 or "未知", 0.5, list(sensors),
