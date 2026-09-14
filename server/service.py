@@ -93,9 +93,13 @@ class AgentService:
                 kg = KnowledgeGraph()
                 if cfg.llm.cascade_enabled and cfg.llm.small_diag_url:
                     # MS6 级联：2B SFT 前置（关仲裁）+ 27B 兜底（升级不依赖模型置信度）
+                    # 级联兜底也关闭思考：完整实时流 prompt 下思考链会把一次兜底
+                    # 推理拉到数十秒，违反级联兜底 <=10s 契约；单模型旧路径不改变。
+                    fallback_cfg = dict(llm_cfg)
+                    fallback_cfg["enable_thinking"] = False
                     reasoner = RootCauseReasoner(
                         llm=LLMClient.front(config=llm_cfg), kg=kg,
-                        fallback_llm=LLMClient(config=llm_cfg, prefer="big"),
+                        fallback_llm=LLMClient(config=fallback_cfg, prefer="big"),
                         arbitrate=True)
                     logger.info("L3 级联已启用 | 前置=%s(%s) 兜底=%s(%s)",
                                 cfg.llm.small_diag_model, cfg.llm.small_diag_url,
