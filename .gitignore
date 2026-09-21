@@ -11,14 +11,11 @@ docs/
 *.pt
 *.ckpt
 *.bin
-timesfm/weights/
 */checkpoints/
 
 # 数据集（大体积）
 *.npy
 *.pkl
-Anomaly-Transformer/dataset/
-Anomaly-Transformer/data/
 data/
 datasets/
 
@@ -57,3 +54,6 @@ saves/
 
 # ---- API配置文件 ----
 opencode.json
+
+# ---- 设计文件 ----
+design/

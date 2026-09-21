@@ -1,10 +1,8 @@
 # Agent_MFF_Early_Warning
 
-中频炉水冷系统多参数融合预警智能体（第十一届"创客中国"工业智能体大赛）。
+中频炉水冷系统多参数融合预警智能体。
 
-实现从**"事后报警"到"事前预警"**、从**"单点监测"到"系统健康诊断"**的跨越：
-L1 规则预警（微秒级）→ L2 趋势预测（提前 10~30min）→ L3 大模型根因诊断（三层防幻觉），
-并由**四大智能体**串联形成完整闭环。
+实现从 **"事后报警"到"事前预警"**、从 **"单点监测" 到 "系统健康诊断"** 的跨越：L1 规则预警（微秒级）→ L2 趋势预测（提前 10~30min）→ L3 大模型根因诊断（三层防幻觉），并由 **四大智能体** 串联形成完整闭环。
 
 ## 一、系统架构
 
@@ -84,7 +82,7 @@ python -m server.mcp_server                                    # stdio 传输
 python -m server.mcp_server --transport streamable-http --port 8105   # HTTP 传输
 ```
 
-### 2.3 一键演示（赛事评审用）
+### 2.3 一键演示
 
 ```bash
 # 编排工作流：四大智能体一键串联（数据→预警→工单→反馈）
@@ -95,6 +93,8 @@ curl -s -X POST http://localhost:8000/api/v1/workflow/run \
 
 返回全链路结果：预警级别 → L3 根因（置信度/证据/防幻觉校验）→ 工单+推送 → 反馈归档，
 含各智能体环节耗时 trace（端到端约 5s，其中 LLM 推理 3~5s）。
+
+![demo](./assert/demo.png)
 
 ### 2.4 Docker 一键部署（可选，基于 conda 环境 mff_agent）
 
@@ -118,26 +118,7 @@ docker compose down             # 停止（保留数据卷）
 - 模型权重 `models/` 只读挂载、`data/` 与 `logs/` 读写挂载，不随镜像分发
 - 默认 CPU 版 PyTorch；如需 CUDA：`docker build --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu130 -t mff-agent:latest .`
 
-### 2.5 公网访问（ngrok 内网穿透）
 
-服务已绑定 `0.0.0.0:8000`，本机/局域网可直接访问。若需公网访问（NAT 内网环境）：
-
-```bash
-# 1. 安装 ngrok（用户级，无需 root）
-curl -sL https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz | tar xz -C ~/.local/bin
-export PATH=$HOME/.local/bin:$PATH
-
-# 2. 配置 authtoken（免费注册 https://dashboard.ngrok.com 获取）
-ngrok config add-authtoken <你的authtoken>
-
-# 3. 暴露 8000 端口（公网 HTTPS 地址）
-ngrok http 8000
-# 输出形如：https://xxxx.ngrok-free.dev -> http://localhost:8000
-```
-
-- 公网地址支持全部接口（RESTful API / Swagger / Web 界面 / WebSocket 实时流 / 上传诊断）
-- 免费版会话地址每次重启会变化；长期固定地址需购买 ngrok 域名
-- 停止隧道：`kill $(cat /tmp/ngrok.pid)`（若为 nohup 后台启动）
 
 ## 三、四大智能体与 API
 
@@ -270,6 +251,31 @@ tests/         42 项验收测试（全部通过）
 logs/          运行日志（app.log / error.log，自动滚动）
 ```
 
+## 六、测试与验证
+
+```bash
+python tests/test_simulator.py        # 物理一致性（8 项）
+python tests/test_ms1_perception.py   # 感知层（4 项）
+python tests/test_ms2_rule_engine.py  # L1 规则（7 项）
+python tests/test_ms3_detection.py    # L2 预测+异常+路由（8 项）
+python tests/test_ms4_reasoning.py    # 根因推理+防幻觉（4 项）
+python tests/test_ms5_action.py       # 闭环处置（5 项）
+python tests/test_ms6_workflow.py     # 工作流集成（4 项）
+```
+
+**核心指标（实测，对照赛事要求）**：
+
+| 指标 | 要求 | 实测 |
+|---|---|---|
+| L1 响应时延 | <10ms | **14.3µs** |
+| L2 预警提前量 | ≥10min | **302min**（缓变故障趋势越限预测） |
+| 预测误差 | <5% | **MAPE 1.05%** |
+| 根因定位准确率 | ≥85% | **100%**（4/4×3 次复跑） |
+| 误报率 | <5% | **0~0.61%** |
+| 端到端时延 | <3s | **75ms**（兜底）/ **~5s**（含 LLM） |
+| 特征过滤效率 | ≥90% | **98%** |
+
+
 ## 七、集中配置与日志
 
 ### 7.1 集中参数设置（config/）
@@ -314,36 +320,4 @@ logs/error.log     # ERROR 及以上错误日志
 关键日志埋点：服务初始化、实时流接入/断开、L1/L2/L3 预警触发、根因诊断结果、工单生成、编排工作流执行。
 自定义日志级别/目录见 `config/settings.yaml` 的 `logging` 段，或环境变量 `MFF_LOGGING_LEVEL=DEBUG`。
 
-## 六、测试与验证
 
-```bash
-python tests/test_simulator.py        # 物理一致性（8 项）
-python tests/test_ms1_perception.py   # 感知层（4 项）
-python tests/test_ms2_rule_engine.py  # L1 规则（7 项）
-python tests/test_ms3_detection.py    # L2 预测+异常+路由（8 项）
-python tests/test_ms4_reasoning.py    # 根因推理+防幻觉（4 项）
-python tests/test_ms5_action.py       # 闭环处置（5 项）
-python tests/test_ms6_workflow.py     # 工作流集成（4 项）
-```
-
-**核心指标（实测，对照赛事要求）**：
-
-| 指标 | 要求 | 实测 |
-|---|---|---|
-| L1 响应时延 | <10ms | **14.3µs** |
-| L2 预警提前量 | ≥10min | **302min**（缓变故障趋势越限预测） |
-| 预测误差 | <5% | **MAPE 1.05%** |
-| 根因定位准确率 | ≥85% | **100%**（4/4×3 次复跑） |
-| 误报率 | <5% | **0~0.61%** |
-| 端到端时延 | <3s | **75ms**（兜底）/ **~5s**（含 LLM） |
-| 特征过滤效率 | ≥90% | **98%** |
-
-## 八、文档
-
-| 文档 | 说明 |
-|---|---|
-| `design/BLUEPRINT.md` | 总体蓝图（架构/数据契约/阈值字典） |
-| `design/MILESTONES.md` | 6 个里程碑拆解与验收标准 |
-| `design/TEST_REPORT.md` | 测试报告汇总（40 项 100% 通过） |
-| `design/API_INTERFACE.md` | 四大智能体接口文档（OpenAPI+MCP+curl 示例） |
-| `docs/*.docx` | 大赛提交版（接口文档/测试报告） |
