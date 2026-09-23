@@ -138,6 +138,12 @@ detection:
   anomaly_threshold: 0.6         # 异常分阈值
   anomaly_vae_weight: 0.5        # VAE 融合权重
   anomaly_latent: 8              # VAE 隐变量维度
+  anomaly_model: anomaly_transformer   # L2 异常检测轨: vae / anomaly_transformer（可切换，加载失败自动降级 VAE）
+  anomaly_at_weights: models/at_anomaly.pt   # Anomaly-Transformer 权重（tools/train_anomaly_transformer.py 生成）
+  anomaly_at_window: 100         # Anomaly-Transformer 输入窗口
+  anomaly_at_d_model: 512        # 隐层维度
+  anomaly_at_heads: 8            # 注意力头数
+  anomaly_at_layers: 3           # 编码层数
   stream_l2_interval: 60         # L2 预测节流（条）
   stream_l3_min_realtime: 600    # L3 触发所需实时段最小条数
   exceed_lookback: 600           # 越限预测回看（秒）

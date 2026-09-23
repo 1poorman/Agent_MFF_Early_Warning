@@ -170,6 +170,12 @@ class DetectionSettings:
     anomaly_threshold: float = 0.6
     anomaly_vae_weight: float = 0.5
     anomaly_latent: int = 8
+    anomaly_model: str = "anomaly_transformer"   # vae / anomaly_transformer
+    anomaly_at_weights: str = "models/at_anomaly.pt"
+    anomaly_at_window: int = 100
+    anomaly_at_d_model: int = 512
+    anomaly_at_heads: int = 8
+    anomaly_at_layers: int = 3
     stream_l2_interval: int = 60
     stream_l3_min_realtime: int = 600
     exceed_lookback: int = 600

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import pandas as pd
+import torch
 
 from action import EmergencyPlanner, Feedback, FeedbackStore, Notifier, WorkOrderGenerator
 from config import get_logger, get_settings
@@ -83,9 +84,7 @@ class AgentService:
             p = cfg.paths.models / f"fast_{col}.pt"
             if p.exists():
                 fast[col] = FastTrackForecaster.load(str(p))
-        det = None
-        if (cfg.paths.models / "fast_anomaly.pkl").exists():
-            det = FastAnomalyDetector.load(str(cfg.paths.models / "fast_anomaly.pkl"))
+        det = self._load_anomaly_detector(cfg)
         reasoner = None
         if use_llm:
             try:
@@ -121,6 +120,53 @@ class AgentService:
             horizon_s=cfg.detection.forecast_horizon,
             models_dir=str(cfg.paths.models))
         return pipeline
+
+    @staticmethod
+    def _load_anomaly_detector(cfg):
+        """按 config.detection.anomaly_model 加载 L2 异常检测轨（失败降级 VAE+IF）。
+
+        - anomaly_transformer：多维联合 + 关联差异（Anomaly-Transformer，
+          权重 models/at_anomaly.pt 由 tools/train_anomaly_transformer.py 生成）；
+        - vae：VAE+孤立森林（models/fast_anomaly.pkl）。
+        """
+        if cfg.detection.anomaly_model == "anomaly_transformer":
+            try:
+                from detection.anomaly_transformer import AnomalyTransformerDetector
+                wp = cfg.paths.resolve(cfg.detection.anomaly_at_weights)
+                if wp.exists():
+                    det = AnomalyTransformerDetector.load(
+                        str(wp), device=("cuda:1" if torch.cuda.device_count() > 1
+                                         else ("cuda" if torch.cuda.is_available() else "cpu")))
+                    logger.info("L2 异常检测轨: Anomaly-Transformer | win=%d weights=%s",
+                                det.window, wp)
+                    return det
+                logger.warning("Anomaly-Transformer 权重不存在: %s，降级 VAE+IF", wp)
+            except Exception as e:
+                logger.warning("Anomaly-Transformer 加载失败(%s)，降级 VAE+IF", e)
+        if (cfg.paths.models / "fast_anomaly.pkl").exists():
+            return FastAnomalyDetector.load(str(cfg.paths.models / "fast_anomaly.pkl"))
+        return None
+
+    def switch_anomaly_model(self, name: str) -> Dict:
+        """运行时切换 L2 异常检测轨（vae / anomaly_transformer），失败保留原轨。"""
+        import copy
+        name = (name or "").lower()
+        if name not in ("vae", "anomaly_transformer"):
+            return {"ok": False, "error": f"未知异常检测模型 {name}"}
+        cfg = copy.deepcopy(self.cfg)
+        cfg.detection.anomaly_model = name
+        try:
+            det = self._load_anomaly_detector(cfg)
+        except Exception as e:
+            det = None
+            logger.warning("切换异常检测轨 %s 失败: %s", name, e)
+        if det is None:
+            return {"ok": False, "error": f"异常检测模型 {name} 不可用（权重缺失或加载失败）"}
+        old = getattr(self.pipeline.detector, "name", None) if self.pipeline.detector else None
+        self.pipeline.detector = det
+        self._anom_cache = {"n": -1, "score": 0.0}
+        logger.info("L2 异常检测轨切换: %s -> %s", old, name)
+        return {"ok": True, "previous": old, "current": name}
 
     @staticmethod
     def _load_precise(cfg):
@@ -208,6 +254,7 @@ class AgentService:
         self._diag_inflight = False          # 后台诊断互斥：同一时间只跑一个 LLM 诊断
         self.preloaded = 0                   # 已预加载数据条数
         self.dew_log = []                    # 凝露风险预警日志
+        self._anom_cache = {"n": -1, "score": 0.0}   # L2 异常分缓存（按 stream_stride 节流复用）
         self._stream_cols = ["inlet_temp", "outlet_temp", "pressure", "flow_rate",
                              "flow_velocity", "tank_level", "conductivity",
                              "cabinet_temp", "cabinet_humidity", "furnace_temp",
@@ -285,21 +332,26 @@ class AgentService:
         for a in l1:
             self.l1_log.append(a.as_dict())
 
-        # ---- L2：异常分 + GRU 预测（预加载完成后） ----
+        # ---- L2：异常分 + 趋势预测（预加载完成后） ----
         out["l2"] = {"anomaly_score": 0.0, "exceed_eta": None, "forecast": None}
         n = len(self.stream_buf)
         det = self.pipeline.detector
         if det is not None and n >= det.window:
-            df = pd.DataFrame(self.stream_buf[-120:])
-            df["timestamp"] = pd.to_datetime(df["timestamp"])
-            try:
-                score = float(det.score(df).iloc[-1])
-                out["l2"]["anomaly_score"] = round(score, 3)
-                if score > det.threshold:
-                    self.l2_log.append({"timestamp": out["timestamp"], "type": "anomaly",
-                                        "score": round(score, 3)})
-            except Exception:
-                pass
+            # 评分节流：重模型（Anomaly-Transformer, stream_stride=10）每 N 条重算
+            # 一次并缓存复用；轻模型（VAE+IF, stride=1）保持逐条评分，行为不变
+            stride = max(1, int(getattr(det, "stream_stride", 1)))
+            if n - self._anom_cache["n"] >= stride:
+                df = pd.DataFrame(self.stream_buf[-120:])
+                df["timestamp"] = pd.to_datetime(df["timestamp"])
+                try:
+                    score = float(det.score(df).iloc[-1])
+                    self._anom_cache = {"n": n, "score": score}
+                    if score > det.threshold:
+                        self.l2_log.append({"timestamp": out["timestamp"], "type": "anomaly",
+                                            "score": round(score, 3)})
+                except Exception:
+                    pass
+            out["l2"]["anomaly_score"] = round(self._anom_cache["score"], 3)
 
         # L2 预测：统一预测引擎（GRU/PatchTST/TimesFM 可切换），每 60 条触发一次
         engine = getattr(self.pipeline, "forecast_engine", None)

@@ -26,7 +26,7 @@
    simulator/           detection/ + models/      reasoning/ + .env
 ```
 
-**技术栈**：numpy/pandas（物理仿真）· GRU+attention/PatchTST（时序预测）· VAE+孤立森林（异常检测）· 知识图谱+Qwen LLM（根因推理）· FastAPI+MCP+ECharts（服务与界面）
+**技术栈**：numpy/pandas（物理仿真）· GRU+attention/PatchTST（时序预测）· Anomaly-Transformer/VAE+孤立森林（多维异常检测，可切换）· 知识图谱+Qwen LLM（根因推理）· FastAPI+MCP+ECharts（服务与界面）
 
 ## 二、快速开始
 
@@ -52,6 +52,10 @@ pip install torch==2.9.0 --index-url https://download.pytorch.org/whl/cu130
 # 5. 训练时序模型（生成 models/ 下的权重，需 GPU 或耐心）
 conda run -n mff_agent python -u tests/test_ms3_detection.py
 #    首次运行自动训练并缓存：快轨 GRU×3 + VAE+IF 异常检测 + 精轨 PatchTST
+
+# 6.（可选）训练 L2 Anomaly-Transformer 异常检测轨（默认异常轨，需 GPU）
+conda run -n mff_agent python -u tools/train_anomaly_transformer.py
+#    产出 models/at_anomaly.pt；未训练时自动降级 VAE+IF 轨，功能不受影响
 ```
 
 ### 2.2 启动 Demo
@@ -175,12 +179,18 @@ Hampel 滤波 + 速率限制）→ **同工况加权插补**（误差 <2%）。
 - 统一输出契约：`{horizon_s, end_value, max_value, min_value, series, method}`，前端曲线虚线展示
 - 加载失败自动降级 GRU，保证 7×24 可用
 
-**异常检测轨**（始终在线）：
+**异常检测轨**（始终在线，模型可切换）：
 
-| 轨道 | 模型 | 场景 | 实测 |
+| 轨道 | 模型 | 场景 | 说明 |
 |---|---|---|---|
-| 异常轨 | VAE（仅正常数据训练）+ 孤立森林（残差特征空间） | 始终在线 | 检出 99.9%/误报 0.61% |
+| 异常轨（默认） | **Anomaly-Transformer**（`detection/anomaly_transformer.py`，源码复用 `Anomaly-Transformer/`） | 多维联合 | 10 通道窗口内联合建模：**重构误差 + 关联差异** 双维 max 融合，任一维超阈即触发；仅正常数据训练。实测：故障段检出 99.8%（3 类故障峰值分 1.0，缓变 scale_buildup 99.2%），稳定工况误报 0.61% |
+| 异常轨（备选） | VAE（仅正常数据训练）+ 孤立森林（残差特征空间） | 始终在线 | 检出 99.9%/误报 0.61%；AT 权重缺失/加载失败自动降级此轨 |
 | 路由 | 参数数×步长×异常置信度规则分流 | 快轨↔精轨自动升级/降级 | 4/4 正确 |
+
+- 配置：`config/settings.yaml` → `detection.anomaly_model`（anomaly_transformer / vae）
+- 切换：API `POST /api/v1/anomaly-model?name=vae`；`GET /api/v1/anomaly-model` 查询当前轨
+- 权重：`models/at_anomaly.pt`（训练：`conda run -n mff_agent python -u tools/train_anomaly_transformer.py`，仅正常工况数据，minimax 策略对齐官方 solver）
+- `Anomaly-Transformer/checkpoints/MSL_checkpoint.pth` 为 MSL 数据集（55 通道）权重，与本项目 10 通道特征不兼容，仅作基准复现用途
 
 **残差学习**是快轨精度的关键：直接预测原始序列 MAPE 10% 不达标，
 改为预测"相对末值持续基线的偏差"后降至 1%。
@@ -237,7 +247,8 @@ python -c "from storage import TimeSeriesDB; print(TimeSeriesDB().stats())"  # �
 config/        集中参数设置（settings.yaml）+ 统一日志配置
 simulator/     物理机理数据仿真（含 4 类故障注入）
 perception/    数据接入与质量管控
-detection/     L1 规则引擎 / L2 预测(GRU/PatchTST/TimesFM 可切换)+异常检测 / 模型路由
+detection/     L1 规则引擎 / L2 预测(GRU/PatchTST/TimesFM 可切换)+异常检测(VAE+IF / Anomaly-Transformer 可切换) / 模型路由
+Anomaly-Transformer/  官方 Anomaly-Transformer 源码 + MSL 基准权重（L2 异常检测轨，detection/ 复用其 model/ 结构）
 timesfm/       官方 TimesFM-2.5 源码 + 本地权重（L2 基础大模型后端）
 reasoning/     知识图谱 / LLM 根因推理 / 三层防幻觉 / 置信度门控
 action/        工单 / 分级推送 / 应急预案 / 反馈归档
@@ -306,6 +317,8 @@ detection:
   forecast_model: gru      # gru / patchtst / timesfm
   forecast_horizon: 600    # 预测步长（秒）
   timesfm_weights: timesfm/weights   # TimesFM-2.5 本地权重目录
+  anomaly_model: anomaly_transformer # vae / anomaly_transformer（L2 异常检测轨）
+  anomaly_at_weights: models/at_anomaly.pt   # Anomaly-Transformer 权重
 ```
 
 ### 7.2 运行日志（config/logging_config.py）

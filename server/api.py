@@ -275,6 +275,34 @@ async def get_forecast_model():
     }}
 
 
+@app.get("/api/v1/anomaly-model", tags=["预警分析智能体"],
+         summary="查询 L2 异常检测轨",
+         description="返回当前 L2 异常检测模型（vae / anomaly_transformer）、可用列表、窗口与阈值。")
+async def get_anomaly_model():
+    """获取当前 L2 异常检测模型与可用列表。"""
+    s = svc()
+    det = s.pipeline.detector
+    return {"code": 0, "data": {
+        "current": getattr(det, "name", None) if det is not None else None,
+        "available": ["vae", "anomaly_transformer"],
+        "window": int(getattr(det, "window", 0) or 0),
+        "threshold": float(getattr(det, "threshold", 0.6) or 0.6),
+    }}
+
+
+@app.post("/api/v1/anomaly-model", tags=["预警分析智能体"],
+          summary="切换 L2 异常检测轨",
+          description="运行时切换异常检测轨：vae（VAE+孤立森林）/ anomaly_transformer"
+                      "（Anomaly-Transformer 多维联合+关联差异）。失败保留原轨。")
+async def switch_anomaly_model(name: str):
+    """切换 L2 异常检测轨（?name=vae|anomaly_transformer）。"""
+    s = svc()
+    r = s.switch_anomaly_model(name)
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r.get("error", "切换失败"))
+    return {"code": 0, "data": r}
+
+
 @app.post("/api/v1/upload", tags=["数据管理智能体"],
          summary="上传时序数据文件（选定监测数据源）",
          description="""

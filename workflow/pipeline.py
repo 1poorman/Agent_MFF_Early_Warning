@@ -60,7 +60,7 @@ class EarlyWarningPipeline:
 
     def __init__(self,
                  fast_models: Optional[Dict[str, FastTrackForecaster]] = None,
-                 anomaly_detector: Optional[FastAnomalyDetector] = None,
+                 anomaly_detector: Optional[object] = None,   # FastAnomalyDetector / AnomalyTransformerDetector（duck-typing: score/window/threshold）
                  precise_model=None,
                  reasoner: Optional[RootCauseReasoner] = None,
                  use_llm: bool = True,
