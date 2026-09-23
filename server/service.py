@@ -117,6 +117,8 @@ class AgentService:
             fast_models=fast,
             precise_model=self._load_precise(cfg),
             timesfm_weights_dir=str(cfg.detection.timesfm_weights),
+            chronos_weights_dir=str(cfg.paths.resolve(cfg.detection.chronos_weights)),
+            chronos_context=cfg.detection.chronos_context,
             horizon_s=cfg.detection.forecast_horizon,
             models_dir=str(cfg.paths.models))
         return pipeline

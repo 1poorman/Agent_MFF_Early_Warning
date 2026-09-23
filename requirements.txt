@@ -19,6 +19,10 @@ huggingface_hub
 safetensors
 soxr  # librosa 的音频解码依赖（transformers 导入链需要）
 
+# Chronos-2 L2 预测后端（本地源码 chronos-forecasting/src，权重 models/chronos-2）
+accelerate>=1.1.0,<2
+einops>=0.7
+
 # 时序数据库（本地 PostgreSQL 分区表）
 psycopg2-binary>=2.9
 

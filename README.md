@@ -26,7 +26,7 @@
    simulator/           detection/ + models/      reasoning/ + .env
 ```
 
-**技术栈**：numpy/pandas（物理仿真）· GRU+attention/PatchTST（时序预测）· Anomaly-Transformer/VAE+孤立森林（多维异常检测，可切换）· 知识图谱+Qwen LLM（根因推理）· FastAPI+MCP+ECharts（服务与界面）
+**技术栈**：numpy/pandas（物理仿真）· GRU+attention/PatchTST/TimesFM-2.5/Chronos-2（时序预测，可切换）· Anomaly-Transformer/VAE+孤立森林（多维异常检测，可切换）· 知识图谱+Qwen LLM（根因推理）· FastAPI+MCP+ECharts（服务与界面）
 
 ## 二、快速开始
 
@@ -173,8 +173,9 @@ Hampel 滤波 + 速率限制）→ **同工况加权插补**（误差 <2%）。
 | `gru`（默认） | 快轨 GRU+attention 残差学习 | `models/fast_outlet_temp.pt` | 16800s | 边缘常驻，MAPE 1.05% |
 | `patchtst` | 通道独立 PatchTST 精轨 | `models/precise.pt` | 7200s | 多参数联合预测 |
 | `timesfm` | TimesFM-2.5 基础模型（200M） | `timesfm/weights/` 本地权重（925MB，transformers 移植版，无需联网） | 1024s | 基础大模型泛化，输出 128 步 |
+| `chronos` | Chronos-2 基础模型（120M，T5） | `models/chronos-2/` 本地权重（456MB，safetensors，无需联网） | 1024s | 零样本 21 分位概率预测，取中位数；源码 `chronos-forecasting/src` |
 
-- 配置：`config/settings.yaml` → `detection.forecast_model`（gru/patchtst/timesfm）
+- 配置：`config/settings.yaml` → `detection.forecast_model`（gru/patchtst/timesfm/chronos）
 - 切换：Demo 顶部"预测模型"下拉框（实时流与上传文件均生效）；API `POST /api/v1/upload?model=timesfm`；`GET /api/v1/forecast-model` 查询当前模型
 - 统一输出契约：`{horizon_s, end_value, max_value, min_value, series, method}`，前端曲线虚线展示
 - 加载失败自动降级 GRU，保证 7×24 可用
@@ -247,8 +248,9 @@ python -c "from storage import TimeSeriesDB; print(TimeSeriesDB().stats())"  # �
 config/        集中参数设置（settings.yaml）+ 统一日志配置
 simulator/     物理机理数据仿真（含 4 类故障注入）
 perception/    数据接入与质量管控
-detection/     L1 规则引擎 / L2 预测(GRU/PatchTST/TimesFM 可切换)+异常检测(VAE+IF / Anomaly-Transformer 可切换) / 模型路由
+detection/     L1 规则引擎 / L2 预测(GRU/PatchTST/TimesFM/Chronos 可切换)+异常检测(VAE+IF / Anomaly-Transformer 可切换) / 模型路由
 Anomaly-Transformer/  官方 Anomaly-Transformer 源码 + MSL 基准权重（L2 异常检测轨，detection/ 复用其 model/ 结构）
+chronos-forecasting/  官方 Chronos-2 源码（L2 预测后端，权重在 models/chronos-2）
 timesfm/       官方 TimesFM-2.5 源码 + 本地权重（L2 基础大模型后端）
 reasoning/     知识图谱 / LLM 根因推理 / 三层防幻觉 / 置信度门控
 action/        工单 / 分级推送 / 应急预案 / 反馈归档
@@ -286,6 +288,33 @@ python tests/test_ms6_workflow.py     # 工作流集成（4 项）
 | 端到端时延 | <3s | **75ms**（兜底）/ **~5s**（含 LLM） |
 | 特征过滤效率 | ≥90% | **98%** |
 
+### L2 模型基准对比（tools/bench_l2_models.py，cuda，600s 步长）
+
+**预测轨**（MAPE 三列分别为：训练分布段 / 跨文件正常段 / 缓变故障段）：
+
+| 模型 | 输入窗口 | 参数量 | 磁盘 | 加载显存 | 单次推理峰值显存 | 延迟 | MAPE(训练分布) | MAPE(跨文件正常) | MAPE(缓变故障) |
+|---|---|---|---|---|---|---|---|---|---|
+| GRU 快轨（默认） | 16800 | 0.02M | 0.1MB | ~0 | 10MB | **1ms** | 1.14% | 8.64% | 10.54% |
+| PatchTST 精轨 | 7200 | 7.0M | 28MB | 28MB | 1MB | 3ms | 3.05% | **4.50%** | **8.44%** |
+| TimesFM-2.5 | 1024 | 231M | 925MB | 925MB | 6MB | 86ms | 1.02% | 8.74% | 10.65% |
+| Chronos-2 | 1024 | 119M | 478MB | 478MB | 5MB | 30ms | **0.99%** | 8.73% | 11.25% |
+
+**检测轨**（检出=混合故障段异常分超阈比例，FAR=正常数据误报率）：
+
+| 模型 | 窗口 | 磁盘 | 加载显存 | 批量推理峰值显存 | 检出 | FAR | 单窗口评分 |
+|---|---|---|---|---|---|---|---|
+| VAE+孤立森林 | 60 | 1.3MB | ~0 | 19MB | **99.9%** | 0.62% | 8.8ms |
+| Anomaly-Transformer（默认） | 100 | 29.5MB | 29MB | 2822MB | 99.8% | **0.36%** | 8.5ms |
+
+**结论**：
+- 预测：基础大模型（TimesFM/Chronos）训练分布内精度与 GRU 持平（~1%），但权重/显存大 2~4 个量级、延迟高 30~90 倍；GRU 是边缘常驻最优工程权衡，PatchTST 在跨文件/故障段泛化最佳（多参数联合建模）；Chronos-2 额外输出 21 分位概率区间（可做不确定性预警）
+- 检测：Anomaly-Transformer 误报更低（0.36% vs 0.62%）、单窗口评分更快，批量评分显存较重（2000 窗 2.8GB，实时流单窗口不受影响）
+- 所有基础模型延迟（≤86ms）均满足实时流 60s 节流预算，可即切即用
+
+```bash
+conda run -n mff_agent python -u tools/bench_l2_models.py    # 复现基准（结果写 logs/bench_l2.json）
+```
+
 
 ## 七、集中配置与日志
 
@@ -314,9 +343,10 @@ L2 预测模型可在配置中切换（demo 前端下拉框/API 参数即切即�
 
 ```yaml
 detection:
-  forecast_model: gru      # gru / patchtst / timesfm
+  forecast_model: gru      # gru / patchtst / timesfm / chronos
   forecast_horizon: 600    # 预测步长（秒）
   timesfm_weights: timesfm/weights   # TimesFM-2.5 本地权重目录
+  chronos_weights: models/chronos-2  # Chronos-2 本地权重目录
   anomaly_model: anomaly_transformer # vae / anomaly_transformer（L2 异常检测轨）
   anomaly_at_weights: models/at_anomaly.pt   # Anomaly-Transformer 权重
 ```

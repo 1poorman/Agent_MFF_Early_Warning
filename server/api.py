@@ -270,7 +270,7 @@ async def get_forecast_model():
     engine = getattr(s.pipeline, "forecast_engine", None)
     return {"code": 0, "data": {
         "current": engine.name if engine else "gru",
-        "available": ["gru", "patchtst", "timesfm"],
+        "available": ["gru", "patchtst", "timesfm", "chronos"],
         "horizon_s": engine.horizon_s if engine else 600,
     }}
 
@@ -312,12 +312,12 @@ async def switch_anomaly_model(name: str):
 
 **输入**：
 - `file`：CSV/JSON 文件，需含 timestamp 列，其余列按数据契约（缺列自动补 NaN 交质量管控插补）
-- `model`：L2 预测模型，可选 gru / patchtst / timesfm
+- `model`：L2 预测模型，可选 gru / patchtst / timesfm / chronos
 
 **输出**：文件名、条数、质量报告、绘图抽样序列。
 """)
 async def upload_analyze(file: UploadFile = File(..., description="时序数据文件（CSV/JSON，需含 timestamp 列）"),
-                         model: str = Form("gru", description="L2 预测模型：gru / patchtst / timesfm")):
+                         model: str = Form("gru", description="L2 预测模型：gru / patchtst / timesfm / chronos")):
     """上传时序数据文件 -> 缓存为监测数据源（不自动诊断，点开始监测才运行四大智能体）。
 
     CSV 列契约见 perception/ingest.py ALL_COLUMNS；
@@ -381,7 +381,7 @@ class StreamRequest(BaseModel):
     fault_start: int = Field(120, description="故障起始时间（秒），相对实时流起点")
     speed: float = Field(20.0, description="回放倍速（条/秒），1–100")
     duration: int = Field(1800, description="监测时长（秒）")
-    forecast_model: str = Field("gru", description="L2 预测模型：gru / patchtst / timesfm")
+    forecast_model: str = Field("gru", description="L2 预测模型：gru / patchtst / timesfm / chronos")
     data_source: str = Field("simulator", description="数据源：simulator（物理仿真生成）/ upload（回放已上传时序数据）")
 
 
@@ -442,9 +442,9 @@ async def stream_ws(ws: WebSocket):
                     "forecast_model=%s data_source=%s",
                     fault, fault_start, speed, duration, forecast_model, data_source)
 
-        # L2 预测模型运行时切换（GRU/PatchTST/TimesFM）
+        # L2 预测模型运行时切换（GRU/PatchTST/TimesFM/Chronos）
         engine = getattr(s.pipeline, "forecast_engine", None)
-        if engine is not None and forecast_model in ("gru", "patchtst", "timesfm"):
+        if engine is not None and forecast_model in ("gru", "patchtst", "timesfm", "chronos"):
             engine.switch(forecast_model, fast_models=s.pipeline.fast_models,
                           models_dir=str(s.cfg.paths.models))
             logger.info("实时流预测模型: %s", engine.name)

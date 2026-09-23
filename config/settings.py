@@ -161,6 +161,8 @@ class DetectionSettings:
     forecast_threshold: float = 55.0
     forecast_horizon: int = 600
     timesfm_weights: str = "timesfm/weights"
+    chronos_weights: str = "models/chronos-2"
+    chronos_context: int = 1024
     fast_window: int = 3600
     fast_horizon: int = 600
     fast_period: int = 8400

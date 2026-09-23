@@ -125,10 +125,12 @@ rules:
 
 # ---------------- L2 检测 / 实时流 ----------------
 detection:
-  forecast_model: gru            # L2 预测模型: gru / patchtst / timesfm（可切换）
+  forecast_model: gru            # L2 预测模型: gru / patchtst / timesfm / chronos（可切换）
   forecast_threshold: 55.0       # 出水温度越限预测阈值 (℃)
   forecast_horizon: 600          # 越限预测水平（秒）
   timesfm_weights: timesfm/weights   # TimesFM-2.5 本地权重目录
+  chronos_weights: models/chronos-2  # Chronos-2 本地权重目录（safetensors 456MB）
+  chronos_context: 1024          # Chronos-2 输入上下文长度（条）
   fast_window: 3600              # GRU 快轨输入窗口（秒）
   fast_horizon: 600              # GRU 预测步长（秒，≤10min）
   fast_period: 8400              # 工况循环周期（秒）

@@ -1,21 +1,23 @@
-"""L2 时序预测模型后端：统一接口，支持 GRU / PatchTST / TimesFM-2.5 可切换。
+"""L2 时序预测模型后端：统一接口，支持 GRU / PatchTST / TimesFM-2.5 / Chronos-2 可切换。
 
 设计：
 - `ForecastBackend`：统一预测接口（输入出水温度历史序列 -> 未来 horizon 预测数组）；
-- 三个实现：
+- 四个实现：
   - `GRUBackend`      ：现有快轨 FastTrackForecaster（STL 分解 + GRU+attention，残差学习）；
   - `PatchTSTBackend` ：现有精轨 PreciseTrackForecaster（多参数通道独立 PatchTST）；
   - `TimesFMBackend`  ：TimesFM-2.5 基础模型（transformers 移植版，本地权重 timesfm/weights）；
+  - `ChronosBackend`  ：Chronos-2 基础模型（本地源码 chronos-forecasting/src，权重 models/chronos-2）；
 - `ForecastEngine`   ：按 config.detection.forecast_model 加载对应后端并做统一预测，返回
   {horizon_s, end_value, max_value, min_value, series, method} 结构（对齐 demo 前端契约）。
 
 配置（config/settings.yaml detection 段）：
-    forecast_model: gru | patchtst | timesfm
+    forecast_model: gru | patchtst | timesfm | chronos
     forecast_horizon_s: 600      # 预测步长（秒），GRU/PatchTST 按窗口采样间隔=1s
 """
 
 import logging
 import math
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -140,6 +142,44 @@ class TimesFMBackend(ForecastBackend):
         return np.concatenate([pred, ext])
 
 
+# ---------------- Chronos-2 后端 ----------------
+
+class ChronosBackend(ForecastBackend):
+    """Chronos-2 基础模型（amazon，120M，T5 架构，零样本多分位预测）。
+
+    源码：项目本地 chronos-forecasting/src/chronos（sys.path 注入，与 timesfm/
+    同等离线策略）；权重：models/chronos-2（safetensors 456MB）。
+    底层 predict 返回 (batch, 21 quantiles, pred_len)，取 0.5 分位为中位预测。
+    """
+
+    name = "chronos"
+    MEDIAN_IDX = 10          # quantiles 列表中 0.5 的下标（0.01..0.99 共 21 个）
+
+    def __init__(self, weights_dir: str = "models/chronos-2",
+                 context_len: int = 1024, device: Optional[str] = None):
+        import sys
+        src = str(Path(__file__).resolve().parent.parent / "chronos-forecasting" / "src")
+        if src not in sys.path:
+            sys.path.insert(0, src)
+        from chronos import Chronos2Pipeline
+        self.context_len = int(context_len)
+        self.device = device or ("cuda:1" if torch.cuda.device_count() > 1
+                                 else ("cuda" if torch.cuda.is_available() else "cpu"))
+        logger.info("Chronos-2 加载本地权重: %s (device=%s)", weights_dir, self.device)
+        self.pipeline = Chronos2Pipeline.from_pretrained(
+            weights_dir, device_map=self.device, dtype=torch.float32)
+        logger.info("Chronos-2 加载完成")
+
+    def predict(self, recent: pd.Series, horizon_s: int = DEFAULT_HORIZON_S) -> np.ndarray:
+        series = recent.to_numpy(dtype=np.float32)
+        series = series[-self.context_len:]
+        t = torch.tensor(series, dtype=torch.float32).view(1, 1, -1)   # (1, variates, ctx)
+        with torch.no_grad():
+            out = self.pipeline.predict(t, prediction_length=int(horizon_s))
+        pred = out[0][0, self.MEDIAN_IDX].detach().cpu().numpy()       # (pred_len,)
+        return np.asarray(pred, dtype=float)
+
+
 # ---------------- 预测引擎 ----------------
 
 class ForecastEngine:
@@ -149,12 +189,15 @@ class ForecastEngine:
         "gru": GRUBackend,
         "patchtst": PatchTSTBackend,
         "timesfm": TimesFMBackend,
+        "chronos": ChronosBackend,
     }
 
     def __init__(self, backend_name: str = "gru",
                  fast_models: Optional[Dict] = None,
                  precise_model=None,
                  timesfm_weights_dir: str = "timesfm/weights",
+                 chronos_weights_dir: str = "models/chronos-2",
+                 chronos_context: int = 1024,
                  horizon_s: int = DEFAULT_HORIZON_S,
                  models_dir: str = "models"):
         self.name = (backend_name or "gru").lower()
@@ -166,6 +209,8 @@ class ForecastEngine:
         self._fast_models = fast_models or {}
         self._precise_model = precise_model
         self._timesfm_weights = timesfm_weights_dir
+        self._chronos_weights = chronos_weights_dir
+        self._chronos_context = chronos_context
         self._models_dir = models_dir
         self._load()
 
@@ -187,6 +232,9 @@ class ForecastEngine:
                     self.backend = PatchTSTBackend(model_path=p)
             elif self.name == "timesfm":
                 self.backend = TimesFMBackend(weights_dir=self._timesfm_weights)
+            elif self.name == "chronos":
+                self.backend = ChronosBackend(weights_dir=self._chronos_weights,
+                                              context_len=self._chronos_context)
             logger.info("L2 预测后端就绪: %s", self.name)
         except Exception as e:
             logger.warning("L2 预测后端 %s 加载失败(%s)，降级 GRU", self.name, e)
@@ -237,6 +285,8 @@ class ForecastEngine:
             return int(b.model.window)
         if isinstance(b, TimesFMBackend):
             return int(min(b.context_len, 1024))
+        if isinstance(b, ChronosBackend):
+            return int(b.context_len)
         return 0
 
     def exceedance_eta(self, series: pd.Series, threshold: float,
