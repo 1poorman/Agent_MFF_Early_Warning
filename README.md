@@ -56,6 +56,9 @@ conda run -n mff_agent python -u tests/test_ms3_detection.py
 # 6.（可选）训练 L2 Anomaly-Transformer 异常检测轨（默认异常轨，需 GPU）
 conda run -n mff_agent python -u tools/train_anomaly_transformer.py
 #    产出 models/at_anomaly.pt；未训练时自动降级 VAE+IF 轨，功能不受影响
+
+# 7.（可选）训练多变量快轨 GRU（6 通道物理关联输入，GRU 后端自动优先）
+conda run -n mff_agent python -u tools/train_fast_mv.py
 ```
 
 ### 2.2 启动 Demo
@@ -171,12 +174,13 @@ Hampel 滤波 + 速率限制）→ **同工况加权插补**（误差 <2%）。
 | 后端 | 模型 | 加载方式 | 窗口 | 说明 |
 |---|---|---|---|---|
 | `gru`（默认） | 快轨 GRU+attention 残差学习 | `models/fast_outlet_temp.pt` | 16800s | 边缘常驻，MAPE 1.05% |
-| `patchtst` | 通道独立 PatchTST 精轨 | `models/precise.pt` | 7200s | 多参数联合预测 |
+| `patchtst` | 通道独立 PatchTST 精轨 | `models/precise.pt` | 7200s | 4 参数联合预测（outlet_temp/inlet_temp/pressure/flow_rate） |
 | `timesfm` | TimesFM-2.5 基础模型（200M） | `timesfm/weights/` 本地权重（925MB，transformers 移植版，无需联网） | 1024s | 基础大模型泛化，输出 128 步 |
 | `chronos` | Chronos-2 基础模型（120M，T5） | `models/chronos-2/` 本地权重（456MB，safetensors，无需联网） | 1024s | 零样本 21 分位概率预测，取中位数；源码 `chronos-forecasting/src` |
 
 - 配置：`config/settings.yaml` → `detection.forecast_model`（gru/patchtst/timesfm/chronos）
 - 切换：Demo 顶部"预测模型"下拉框（实时流与上传文件均生效）；API `POST /api/v1/upload?model=timesfm`；`GET /api/v1/forecast-model` 查询当前模型
+- **多变量输入**（6 通道物理关联，覆盖「热源→换热→水力」链路）：`outlet_temp`（目标）+ `inlet_temp`（热平衡边界 T_out=T_in+Q/(c·ṁ)）+ `flow_rate`（冷却能力 ṁ）+ `electric_power`（热输入 P=√3·UI·cosφ）+ `furnace_temp`（炉体蓄热）+ `pressure`（管网阻抗 P=P_s+RQ²）。数据契约 12 个传感器中，`electric_current`（=f(U,P) 确定性派生）、`flow_velocity`（=Q/A 派生）、`tank_level`/`conductivity`（时间尺度不匹配）、`cabinet_temp`/`cabinet_humidity`（与水冷回路无耦合）不入选。多变量快轨 GRU（`fast_outlet_temp_mv.pt`）存在则自动优先；PatchTST 4 通道（outlet_temp/inlet_temp/pressure/flow_rate）；Chronos-2 原生 6 通道联合；TimesFM 移植版仅支持单变量（接口限制）。完整清单与入选依据见 `design/L2_MODEL_BENCHMARK.md`
 - 统一输出契约：`{horizon_s, end_value, max_value, min_value, series, method}`，前端曲线虚线展示
 - 加载失败自动降级 GRU，保证 7×24 可用
 
@@ -290,14 +294,26 @@ python tests/test_ms6_workflow.py     # 工作流集成（4 项）
 
 ### L2 模型基准对比（tools/bench_l2_models.py，cuda，600s 步长）
 
-**预测轨**（MAPE 三列分别为：训练分布段 / 跨文件正常段 / 缓变故障段）：
+**预测轨**（含单变量 vs 多变量对比；MAPE 三列：训练分布段 / 跨文件正常段 / 缓变故障段）：
 
-| 模型 | 输入窗口 | 参数量 | 磁盘 | 加载显存 | 单次推理峰值显存 | 延迟 | MAPE(训练分布) | MAPE(跨文件正常) | MAPE(缓变故障) |
-|---|---|---|---|---|---|---|---|---|---|
-| GRU 快轨（默认） | 16800 | 0.02M | 0.1MB | ~0 | 10MB | **1ms** | 1.14% | 8.64% | 10.54% |
-| PatchTST 精轨 | 7200 | 7.0M | 28MB | 28MB | 1MB | 3ms | 3.05% | **4.50%** | **8.44%** |
-| TimesFM-2.5 | 1024 | 231M | 925MB | 925MB | 6MB | 86ms | 1.02% | 8.74% | 10.65% |
-| Chronos-2 | 1024 | 119M | 478MB | 478MB | 5MB | 30ms | **0.99%** | 8.73% | 11.25% |
+| 模型 | 输入 | 输入窗口 | 参数量 | 磁盘 | 延迟 | MAPE① | MAPE② | MAPE③ |
+|---|---|---|---|---|---|---|---|---|
+| GRU 快轨 单变量 | 单变量 | 16800 | 0.02M | 0.1MB | **1ms** | 1.14% | 8.64% | 10.54% |
+| **GRU 多变量快轨（默认加载）** | 6 通道 | 16800 | 0.02M | 0.1MB | 2ms | 1.45% | **4.44%** | 10.97% |
+| PatchTST 精轨 | 4 通道 | 7200 | 7.0M | 28MB | 3ms | 3.05% | 4.50% | 8.44% |
+| PatchTST 单通道变体 | 1 通道 | 7200 | 7.0M | 28MB | 3ms | 3.23% | 4.08% | **7.13%** |
+| PatchTST 6 通道变体 | 6 通道 | 7200 | 7.0M | 28MB | 3ms | 3.38% | 4.09% | 11.02% |
+| TimesFM-2.5 | 单变量 | 1024 | 231M | 925MB | 86ms | 1.02% | 8.74% | 10.65% |
+| Chronos-2 单变量 | 单变量 | 1024 | 119M | 478MB | 30ms | 0.99% | 8.73% | 11.25% |
+| **Chronos-2 多变量** | 6 通道 | 1024 | 119M | 478MB | 31ms | **0.91%** | 8.54% | 10.81% |
+
+多变量输入 = 6 通道物理关联参数（outlet_temp 目标 + inlet_temp/flow_rate/
+electric_power/furnace_temp/pressure，覆盖「热源→换热→水力」链路），辅助通道使
+GRU 跨文件泛化 MAPE 下降 49%（8.64%→4.44%）且参数量/延迟几乎不变。
+通道数消融发现（详见 `design/L2_MODEL_BENCHMARK.md` 6.1.1）：多变量收益取决于
+架构是否存在真实跨通道信息注入——GRU 联合输入收益大、Chronos-2 跨变量注意力
+收益温和；PatchTST 通道独立架构无注入（加通道反使缓变故障段 7.13%→11.02%），
+其 4 通道版本的价值在于多参数服务角色（同时产出 inlet/pressure/flow 预测）。
 
 **检测轨**（检出=混合故障段异常分超阈比例，FAR=正常数据误报率）：
 
@@ -314,6 +330,9 @@ python tests/test_ms6_workflow.py     # 工作流集成（4 项）
 ```bash
 conda run -n mff_agent python -u tools/bench_l2_models.py    # 复现基准（结果写 logs/bench_l2.json）
 ```
+
+> 全流程细节（硬件环境、数据集、模型架构、代码改造、方法学、完整数值）见
+> `design/L2_MODEL_BENCHMARK.md`。
 
 
 ## 七、集中配置与日志

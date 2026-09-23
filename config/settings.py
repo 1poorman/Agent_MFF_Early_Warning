@@ -168,6 +168,7 @@ class DetectionSettings:
     fast_period: int = 8400
     fast_downsample: int = 10
     fast_hidden: int = 32
+    fast_mv_model: str = "models/fast_outlet_temp_mv.pt"
     anomaly_window: int = 60
     anomaly_threshold: float = 0.6
     anomaly_vae_weight: float = 0.5

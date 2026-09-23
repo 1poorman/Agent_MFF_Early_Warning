@@ -119,6 +119,7 @@ class AgentService:
             timesfm_weights_dir=str(cfg.detection.timesfm_weights),
             chronos_weights_dir=str(cfg.paths.resolve(cfg.detection.chronos_weights)),
             chronos_context=cfg.detection.chronos_context,
+            fast_mv_model=str(cfg.paths.resolve(cfg.detection.fast_mv_model)),
             horizon_s=cfg.detection.forecast_horizon,
             models_dir=str(cfg.paths.models))
         return pipeline
@@ -355,14 +356,16 @@ class AgentService:
                     pass
             out["l2"]["anomaly_score"] = round(self._anom_cache["score"], 3)
 
-        # L2 预测：统一预测引擎（GRU/PatchTST/TimesFM 可切换），每 60 条触发一次
+        # L2 预测：统一预测引擎（GRU/PatchTST/TimesFM/Chronos 可切换），每 60 条触发一次
+        # 传入完整 DataFrame：多变量后端（多变量快轨/PatchTST/Chronos）自动利用
+        # 物理关联辅助通道（inlet_temp/flow_rate/electric_power/furnace_temp/pressure）
         engine = getattr(self.pipeline, "forecast_engine", None)
         if engine is not None and engine.available() \
                 and n >= engine.backend_window() and (n - self._last_l2_t) >= 60:
             df = pd.DataFrame(self.stream_buf)
             df["timestamp"] = pd.to_datetime(df["timestamp"])
             try:
-                fc = engine.forecast(df["outlet_temp"])
+                fc = engine.forecast(df)
                 if fc is not None:
                     out["l2"]["forecast"] = fc
                     self._last_l2_t = n

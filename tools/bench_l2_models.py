@@ -42,7 +42,8 @@ SPEED_RUNS = 5            # 预测速度测量次数
 SCORE_RUNS = 20           # 检测速度测量次数（120 条窗口）
 STREAM_WINDOW = 120       # stream_step 实际评分窗口
 
-MFORECAST = ["gru", "patchtst", "timesfm", "chronos"]
+MFORECAST = ["gru", "gru_mv", "patchtst_uni", "patchtst", "patchtst_mv6",
+             "timesfm", "chronos_uni", "chronos"]
 MDETECT = ["vae", "anomaly_transformer"]
 
 
@@ -116,37 +117,53 @@ def count_params(obj) -> float:
 # ---------------- 预测轨 ----------------
 
 def load_forecast_backend(name: str):
-    """返回 (predict_fn, window, weights_paths, model_obj, label)。"""
+    """返回 (predict_fn, window, weights_paths, model_obj, label, needs_df)。
+
+    needs_df=True 的后端评估时传入完整 DataFrame（多变量），否则传目标列 Series。
+    """
     if name == "gru":
         from detection.fast_track import FastTrackForecaster
         m = FastTrackForecaster.load(str(ROOT / "models/fast_outlet_temp.pt"))
 
         def fn(recent):
             return np.asarray(m.predict(recent.iloc[-m.window:]))[:HORIZON]
-        return fn, m.window, ["models/fast_outlet_temp.pt"], m, "GRU+attention 快轨"
-    if name == "patchtst":
-        from detection.precise_track import PreciseTrackForecaster
-        m = PreciseTrackForecaster.load(str(ROOT / "models/precise.pt"))
+        return fn, m.window, ["models/fast_outlet_temp.pt"], m, "GRU 单变量(基线)", False
+    if name == "gru_mv":
+        from detection.fast_track_mv import FastTrackMultivarForecaster
+        m = FastTrackMultivarForecaster.load(str(ROOT / "models/fast_outlet_temp_mv.pt"))
 
         def fn(recent):
-            df = pd.DataFrame({m.columns[0]: recent.iloc[-m.window:]})
-            for c in m.columns[1:]:
-                if c not in df.columns:
-                    df[c] = 0.0
+            return np.asarray(m.predict(recent.iloc[-m.window:]))[:HORIZON]
+        return fn, m.window, ["models/fast_outlet_temp_mv.pt"], m, \
+            f"GRU 多变量({1 + len(m.aux_cols)}通道)", True
+    if name in ("patchtst", "patchtst_uni", "patchtst_mv6"):
+        from detection.precise_track import PreciseTrackForecaster
+        wpath = {"patchtst": "models/precise.pt", "patchtst_uni": "models/precise_uni.pt",
+                 "patchtst_mv6": "models/precise_mv6.pt"}[name]
+        tag = {"patchtst": "PatchTST 4通道", "patchtst_uni": "PatchTST 单通道",
+               "patchtst_mv6": "PatchTST 6通道"}[name]
+        m = PreciseTrackForecaster.load(str(ROOT / wpath))
+
+        def fn(recent):
+            df = recent.iloc[-m.window:][list(m.columns)] if isinstance(recent, pd.DataFrame) \
+                else pd.DataFrame({m.columns[0]: recent.iloc[-m.window:]}).assign(
+                    **{c: 0.0 for c in m.columns[1:]})
             preds = m.predict(df)
             return np.asarray(preds.get("outlet_temp", preds.get(m.columns[0])))[:HORIZON]
-        return fn, m.window, ["models/precise.pt"], m, "PatchTST 精轨(多参数)"
+        return fn, m.window, [wpath], m, tag, True
     if name == "timesfm":
         from detection.forecaster import TimesFMBackend
         b = TimesFMBackend(weights_dir=str(ROOT / "timesfm/weights"), device=DEVICE)
         return (lambda recent: b.predict(recent, HORIZON)), b.context_len, \
-            ["timesfm/weights"], b, "TimesFM-2.5 基础模型(200M)"
-    if name == "chronos":
+            ["timesfm/weights"], b, "TimesFM-2.5 基础模型(200M)", False
+    if name in ("chronos", "chronos_uni"):
         from detection.forecaster import ChronosBackend
         b = ChronosBackend(weights_dir=str(ROOT / "models/chronos-2"),
-                           context_len=1024, device=DEVICE)
+                           context_len=1024, device=DEVICE,
+                           multivariate=(name == "chronos"))
+        tag = "Chronos-2 多变量(6通道)" if name == "chronos" else "Chronos-2 单变量"
         return (lambda recent: b.predict(recent, HORIZON)), b.context_len, \
-            ["models/chronos-2"], b, "Chronos-2 基础模型(120M)"
+            ["models/chronos-2"], b, tag, name == "chronos"
     raise ValueError(name)
 
 
@@ -155,7 +172,7 @@ def mape(pred: np.ndarray, actual: np.ndarray) -> float:
     return float(np.mean(np.abs((pred - actual)[mask]) / np.abs(actual[mask])) * 100)
 
 
-def eval_accuracy(fn, window, series: pd.Series) -> float:
+def eval_accuracy(fn, window, df: pd.DataFrame, series: pd.Series, needs_df: bool) -> float:
     """末端评估段内取 EVAL_WINDOWS 个窗口，600s 步长 MAPE 均值。"""
     ma = []
     n = len(series)
@@ -163,14 +180,15 @@ def eval_accuracy(fn, window, series: pd.Series) -> float:
         t = n - (EVAL_WINDOWS - i) * EVAL_STRIDE
         if t - window < 0 or t + HORIZON > n:
             continue
-        ctx = series.iloc[t - window: t]
+        ctx = df.iloc[t - window: t] if needs_df else series.iloc[t - window: t]
         actual = series.iloc[t: t + HORIZON].to_numpy(dtype=float)
         ma.append(mape(np.asarray(fn(ctx), dtype=float), actual))
     return float(np.mean(ma)) if ma else float("nan")
 
 
-def measure_speed(fn, series: pd.Series, window: int, runs: int = SPEED_RUNS) -> float:
-    ctx = series.iloc[-window:]
+def measure_speed(fn, df: pd.DataFrame, series: pd.Series, window: int,
+                  needs_df: bool, runs: int = SPEED_RUNS) -> float:
+    ctx = df.iloc[-window:] if needs_df else series.iloc[-window:]
     fn(ctx)                                   # warmup
     ts = []
     for _ in range(runs):
@@ -183,7 +201,7 @@ def measure_speed(fn, series: pd.Series, window: int, runs: int = SPEED_RUNS) ->
 
 def bench_forecast(names):
     print("=" * 88)
-    print("预测任务对比（出水温度 outlet_temp，步长 600s，device=%s）" % DEVICE)
+    print("预测任务对比（目标列 outlet_temp，步长 600s，device=%s）" % DEVICE)
     print("=" * 88)
     normal = load_clean("data/simulated/normal_24h.csv")
     scale = load_clean("data/simulated/scale_12h.csv")     # 缓变故障
@@ -192,26 +210,33 @@ def bench_forecast(names):
     for name in names:
         print(f"\n>>> {name}")
         torch.cuda.empty_cache()
-        load_mb, _, (fn, window, wpaths, mobj, label) = gpu_mem(lambda: load_forecast_backend(name))
-        _, peak_mb, _ = gpu_mem(lambda: fn(normal["outlet_temp"].iloc[-window:]))
+        load_mb, _, (fn, window, wpaths, mobj, label, needs_df) = \
+            gpu_mem(lambda: load_forecast_backend(name))
+        ctx = normal.iloc[-window:] if needs_df else normal["outlet_temp"].iloc[-window:]
+        _, peak_mb, _ = gpu_mem(lambda: fn(ctx))
         print(f"    加载显存增量 {load_mb:.0f}MB | 单次推理峰值 {peak_mb:.0f}MB")
-        r = {"model": name, "label": label, "window": window,
+        r = {"model": name, "label": label, "window": window, "multivariate": needs_df,
              "params_M": count_params(mobj), "disk_MB": disk_mb(*wpaths),
              "load_vram_MB": load_mb, "infer_vram_MB": peak_mb}
-        r["mape_normal"] = eval_accuracy(fn, window, normal["outlet_temp"])
-        r["mape_train"] = eval_accuracy(fn, window, train["outlet_temp"])
-        r["mape_scale"] = eval_accuracy(fn, window, scale["outlet_temp"])
-        r["latency_ms"] = measure_speed(fn, normal["outlet_temp"], window)
+        r["mape_normal"] = eval_accuracy(fn, window, normal, normal["outlet_temp"], needs_df)
+        r["mape_train"] = eval_accuracy(fn, window, train, train["outlet_temp"], needs_df)
+        r["mape_scale"] = eval_accuracy(fn, window, scale, scale["outlet_temp"], needs_df)
+        r["latency_ms"] = measure_speed(fn, normal, normal["outlet_temp"], window, needs_df)
         print(f"    MAPE 正常段={r['mape_normal']:.2f}% 训练段={r['mape_train']:.2f}% "
               f"缓变故障段={r['mape_scale']:.2f}% | 延迟={r['latency_ms']:.0f}ms")
         rows.append(r)
         del fn
         torch.cuda.empty_cache()
     print("\n" + "-" * 88)
-    hdr = f"{'模型':<12}{'窗口':>7}{'参数M':>9}{'磁盘MB':>9}{'加载显存':>10}{'推理显存':>10}{'延迟ms':>9}{'MAPE正常':>10}{'MAPE故障':>10}"
+    hdr = (f"{'模型':<14}{'输入':<10}{'窗口':>7}{'参数M':>9}{'磁盘MB':>9}{'加载显存':>10}"
+           f"{'推理显存':>10}{'延迟ms':>9}{'MAPE正常':>10}{'MAPE故障':>10}")
     print(hdr)
+    NCH = {"gru": 1, "gru_mv": 6, "patchtst_uni": 1, "patchtst": 4, "patchtst_mv6": 6,
+           "timesfm": 1, "chronos_uni": 1, "chronos": 6}
     for r in rows:
-        print(f"{r['model']:<12}{r['window']:>7}{r['params_M']:>9.2f}{r['disk_MB']:>9.1f}"
+        r["n_channels"] = NCH.get(r["model"], 6 if r["multivariate"] else 1)
+        mv = f"{r['n_channels']}通道"
+        print(f"{r['model']:<14}{mv:<10}{r['window']:>7}{r['params_M']:>9.2f}{r['disk_MB']:>9.1f}"
               f"{r['load_vram_MB']:>10.0f}{r['infer_vram_MB']:>10.0f}{r['latency_ms']:>9.0f}"
               f"{r['mape_normal']:>10.2f}{r['mape_scale']:>10.2f}")
     return rows

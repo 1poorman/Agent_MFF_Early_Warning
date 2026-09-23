@@ -136,6 +136,7 @@ detection:
   fast_period: 8400              # 工况循环周期（秒）
   fast_downsample: 10            # GRU 输入降采样倍率
   fast_hidden: 32                # GRU 隐层维度
+  fast_mv_model: models/fast_outlet_temp_mv.pt   # 多变量快轨权重（存在则 GRU 后端自动优先，tools/train_fast_mv.py 生成）
   anomaly_window: 60             # VAE+IF 异常检测窗口（秒）
   anomaly_threshold: 0.6         # 异常分阈值
   anomaly_vae_weight: 0.5        # VAE 融合权重
