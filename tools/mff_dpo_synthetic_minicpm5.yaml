@@ -1,0 +1,27 @@
+# Synthetic-preference baseline, not human RLHF or AI-judge RLAIF.
+model_name_or_path: saves/mff-lora-minicpm5-2b-20260923-merged
+output_dir: logs/rl_minicpm5_20260928/dpo/adapter
+train_file: logs/rl_minicpm5_20260928/data_v2/prefs_train.jsonl
+eval_file: logs/rl_minicpm5_20260928/data_v2/prefs_heldout.jsonl
+feedback_source: synthetic_rules
+lora_rank: 32
+lora_alpha: 64
+lora_dropout: 0.05
+target_modules: all-linear
+beta: 0.1
+max_prompt_length: 1280
+max_completion_length: 640
+learning_rate: 5.0e-6
+num_train_epochs: 1.0
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+gradient_accumulation_steps: 8
+lr_scheduler_type: cosine
+warmup_ratio: 0.1
+max_grad_norm: 1.0
+logging_steps: 5
+save_strategy: 'no'
+bf16: true
+gradient_checkpointing: true
+trust_remote_code: true
+seed: 42

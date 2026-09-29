@@ -1,0 +1,32 @@
+# A3 DPO：规则派生偏好，离线。起点与参考策略同为 A2 合并权重。
+model_name_or_path: saves/mff-lora-minicpm5-2b-20260923-merged
+output_dir: saves/mff-dpo-minicpm5-2b-20260926
+train_file: data/rl/prefs_train.jsonl
+eval_file: data/rl/prefs_heldout.jsonl
+
+# LoRA：与 A2 同超参，A3↔A2 的差异才只剩「模仿 vs 偏好」这一项
+lora_rank: 32
+lora_alpha: 64
+lora_dropout: 0.05
+target_modules: all-linear
+
+# DPO
+beta: 0.1                    # KL 强度；奖励劫持时优先上调此项
+max_prompt_length: 1280      # 实测最长 prompt 852 token；TRL 是**左截断**，宁大勿小
+max_completion_length: 640   # 金标答案偏长，截短会把 sop 尾部切掉
+
+learning_rate: 5.0e-6        # 偏好学习的常用量级，比 SFT 的 1e-4 低两个数量级
+num_train_epochs: 1.0
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+lr_scheduler_type: cosine
+warmup_ratio: 0.1
+max_grad_norm: 1.0
+logging_steps: 5
+save_steps: 200
+save_total_limit: 2
+
+bf16: true
+gradient_checkpointing: true
+trust_remote_code: true
+seed: 42
