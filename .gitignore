@@ -2,6 +2,7 @@
 timesfm/
 Anomaly-Transformer/
 Anomaly_ts/
+chronos-forecasting/
 docs/
 
 # ---- 大文件剔除 ----
@@ -16,6 +17,7 @@ docs/
 # 数据集（大体积）
 *.npy
 *.pkl
+data
 data/
 datasets/
 
@@ -39,6 +41,7 @@ logs/*
 !logs/.gitkeep
 
 # ---- 模型权重 ----
+models
 models/
 
 # ---- 系统/IDE ----
@@ -50,6 +53,7 @@ models/
 tests/
 
 # ---- 测试结果文件 ----
+saves
 saves/
 
 # ---- API配置文件 ----
