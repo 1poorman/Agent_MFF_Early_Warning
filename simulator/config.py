@@ -57,6 +57,8 @@ class SimConfig:
     cabinet_temp_coef: float = 0.004      # 电气柜温升系数 (K/kW)
     humidity_base: float = 50.0           # 湿度基线 (%RH)
     humidity_daily_amp: float = 8.0       # 湿度昼夜波动 (%RH)
+    cooling_response_tau: float = 180.0  # 散热衰退的冷端热惯性时间常数 (s)
+    tank_overflow_level: float = 3.0     # 故障补水的溢流液位 (m)
 
     @classmethod
     def from_settings(cls) -> "SimConfig":

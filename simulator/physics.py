@@ -22,6 +22,8 @@ class PlantState:
     tank_level: float = 2.0           # 水箱液位 m
     conductivity: float = 550.0       # 电导率 µS/cm
     refilling: bool = False           # 补水阀状态
+    cooling_temp_rise: float = 0.0    # 冷端散热热阻带来的附加温升 ℃
+    overflow_lps: float = 0.0         # 补水阀卡开时的溢流，质量平衡用
 
 
 class PlantModel:
@@ -116,12 +118,21 @@ class PlantModel:
 
     # ---------------- 辅助系统 ----------------
 
+    def step_cooling(self, effects: Dict[str, float], power: float, dt: float) -> None:
+        """First-order cold-side thermal response: additional ΔT = heat load × ΔR."""
+        heat = max(self.cfg.coil_loss_frac * power + self.cfg.furnace_water_coef *
+                   (self.state.furnace_temp - self.inlet_temp), 0.0)
+        target = heat * effects.get("cooling_resistance_add", 0.0)
+        rate = 1.0 - np.exp(-dt / self.cfg.cooling_response_tau)
+        self.state.cooling_temp_rise += (target - self.state.cooling_temp_rise) * rate
+
     @property
     def inlet_temp(self) -> float:
         """进水温度：基线 + 昼夜缓变（闭式冷却塔受环境温度影响）。"""
         cfg = self.cfg
         day_phase = 2 * np.pi * (self.t % 86400) / 86400
-        return cfg.inlet_temp_base + cfg.inlet_temp_drift * np.sin(day_phase - np.pi / 2)
+        return (cfg.inlet_temp_base + cfg.inlet_temp_drift * np.sin(day_phase - np.pi / 2)
+                + self.state.cooling_temp_rise)
 
     def step_tank(self, effects: Dict[str, float], dt: float) -> None:
         """水箱质量平衡：泄漏损失 + 补水阀滞环控制。"""
@@ -133,19 +144,30 @@ class PlantModel:
         elif st.tank_level > cfg.tank_level_high:
             st.refilling = False
         inflow = cfg.refill_rate if st.refilling else 0.0
+        inflow += effects.get("uncommanded_refill_lps", 0.0)
         dv = (inflow - leak - 0.02) * 1e-3 * dt   # L/s -> m³/s，0.02L/s 蒸发飞溅
         st.tank_level = max(st.tank_level + dv / cfg.tank_area, 0.0)
+        st.overflow_lps = 0.0
+        if effects.get("uncommanded_refill_lps", 0.0) > 0 and st.tank_level > cfg.tank_overflow_level:
+            st.overflow_lps = (st.tank_level - cfg.tank_overflow_level) * cfg.tank_area * 1000 / dt
+            st.tank_level = cfg.tank_overflow_level
 
-    def step_conductivity(self, dt: float) -> None:
+    def step_conductivity(self, dt: float, effects: Dict[str, float] | None = None) -> None:
         """电导率：浓缩缓慢上升；补水稀释向 300 µS/cm 回落。"""
         cfg = self.cfg
         st = self.state
         st.conductivity += cfg.conductivity_drift / 3600.0 * dt
         if st.refilling:
             st.conductivity += (300.0 - st.conductivity) * 0.002 * dt
+        if effects:
+            st.conductivity += effects.get("conductivity_source_per_s", 0.0) * dt
+            extra_inflow = effects.get("uncommanded_refill_lps", 0.0) * 1e-3 * dt
+            mix = min(extra_inflow / max(cfg.tank_area * st.tank_level, 1e-6), 1.0)
+            st.conductivity += (300.0 - st.conductivity) * mix
 
-    def cabinet_temp(self, power: float) -> float:
-        return self.cfg.ambient_temp + self.cfg.cabinet_temp_coef * power
+    def cabinet_temp(self, power: float, effects: Dict[str, float] | None = None) -> float:
+        mult = (effects or {}).get("cabinet_thermal_resistance_mult", 1.0)
+        return self.cfg.ambient_temp + self.cfg.cabinet_temp_coef * power * mult
 
     def cabinet_humidity(self, effects: Dict[str, float]) -> float:
         cfg = self.cfg

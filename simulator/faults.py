@@ -5,6 +5,10 @@
 - pump_cavitation 水泵气蚀：泵压均值下滑 + 压力/流量低频振荡
 - pipe_leak      管道泄漏：泄漏分流 -> 压力/流量下降、水箱液位下降、局部湿度上升
 - scale_buildup  水垢累积：线圈管路阻抗缓升 -> 流量缓降、出水温度缓慢爬升（缓变型）
+- heat_exchanger_degradation 换热器散热衰退：冷端热阻增加，进/出水温度共同上升
+- water_quality 水质恶化：污染物持续进入，电导率上升
+- cabinet_fan_failure 电气柜散热风机失效：柜体散热热阻增加
+- makeup_valve_stuck_open 补水阀卡开：非指令补水，液位上升并稀释水质
 """
 
 import math
@@ -16,7 +20,7 @@ from typing import Dict, List
 class FaultSpec:
     """故障配置。
 
-    name:     故障类型（filter_clog / pump_cavitation / pipe_leak / scale_buildup）
+    name:     故障类型（见 FAULT_REGISTRY）
     start:    故障起始时刻（相对仿真开始的秒数）
     ramp:     劣化爬升时长（秒），期间故障程度从 0 线性爬到 severity
     severity: 故障严重程度 0~1
@@ -61,11 +65,40 @@ def _apply_scale_buildup(spec: FaultSpec, prog: float, t_rel: float, eff: Dict[s
     eff["r_coil_mult"] = eff.get("r_coil_mult", 1.0) * (1.0 + 2.0 * prog)
 
 
+def _apply_heat_exchanger(spec, prog, t_rel, eff):
+    # Additional cold-side thermal resistance, K/kW. Thermal inertia is in PlantModel.
+    eff["cooling_resistance_add"] = eff.get("cooling_resistance_add", 0.0) + 0.06 * prog
+
+
+def _apply_water_quality(spec, prog, t_rel, eff):
+    eff["conductivity_source_per_s"] = eff.get("conductivity_source_per_s", 0.0) + 0.6 * prog
+
+
+def _apply_cabinet_fan(spec, prog, t_rel, eff):
+    eff["cabinet_thermal_resistance_mult"] = eff.get("cabinet_thermal_resistance_mult", 1.0) * (1 + 2 * prog)
+
+
+def _apply_makeup_valve(spec, prog, t_rel, eff):
+    # A partially stuck valve supplies up to 1.5 L/s independently of the level controller.
+    eff["uncommanded_refill_lps"] = eff.get("uncommanded_refill_lps", 0.0) + 1.5 * prog
+
+
 FAULT_REGISTRY = {
     "filter_clog": _apply_filter_clog,
     "pump_cavitation": _apply_pump_cavitation,
     "pipe_leak": _apply_pipe_leak,
     "scale_buildup": _apply_scale_buildup,
+    "heat_exchanger_degradation": _apply_heat_exchanger,
+    "water_quality": _apply_water_quality,
+    "cabinet_fan_failure": _apply_cabinet_fan,
+    "makeup_valve_stuck_open": _apply_makeup_valve,
+}
+
+FAULT_NAMES = {
+    "filter_clog": "过滤器堵塞", "pump_cavitation": "水泵气蚀",
+    "pipe_leak": "管道泄漏", "scale_buildup": "线圈结垢",
+    "heat_exchanger_degradation": "换热器散热衰退", "water_quality": "水质恶化",
+    "cabinet_fan_failure": "电气柜散热风机失效", "makeup_valve_stuck_open": "补水阀卡开",
 }
 
 

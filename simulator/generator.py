@@ -88,11 +88,12 @@ class DataSimulator:
 
         effects = self.faults.effects(self.t)
         hyd = plant.step_hydraulics(effects, dt)
+        plant.step_cooling(effects, power, dt)
         t_in = plant.inlet_temp
         t_out = plant.outlet_temp(power, hyd["flow"])
 
         plant.step_tank(effects, dt)
-        plant.step_conductivity(dt)
+        plant.step_conductivity(dt, effects)
 
         labels = self.faults.active_labels(self.t)
         row = {
@@ -103,7 +104,7 @@ class DataSimulator:
             "flow_velocity": hyd["velocity"],
             "tank_level": plant.state.tank_level,
             "conductivity": plant.state.conductivity,
-            "cabinet_temp": plant.cabinet_temp(power),
+            "cabinet_temp": plant.cabinet_temp(power, effects),
             "cabinet_humidity": plant.cabinet_humidity(effects),
             "furnace_temp": plant.state.furnace_temp,
             "electric_power": power,
