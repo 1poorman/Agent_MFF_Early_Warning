@@ -2,6 +2,10 @@
 
 中频炉水冷系统多参数融合预警智能体。
 
+后训练实验：[全参 / LoRA SFT 对照](design/SFT_LORA_COMPARISON.md)、[DPO / GRPO 对照及复现](design/SFT_RL_COMPARISON.md)。
+
+难例扩展：[八类故障仿真与独立数据集](design/HARD_FAULT_DATASET.md)（1,380 条，含复合故障、缺失通道与工况偏移）。
+
 实现从 **"事后报警"到"事前预警"**、从 **"单点监测" 到 "系统健康诊断"** 的跨越：L1 规则预警（微秒级）→ L2 趋势预测（提前 10~30min）→ L3 大模型根因诊断（三层防幻觉），并由 **四大智能体** 串联形成完整闭环。
 
 ## 一、系统架构
@@ -151,7 +155,7 @@ docker compose down             # 停止（保留数据卷）
 | 冷却水热平衡 `T_out=T_in+Q/(c·ṁ)` | 热功率与流量联立，流量过低温差封顶 | ΔT 重建中位误差 0.06℃ |
 | 管网特性 `P=P_s+R·Q²`，`v=Q/A` | 水泵扬程-管路阻抗模型，一阶惯性 | 重建静压 120.1±1.3kPa（设定120） |
 | 电气公式 `P=√3·U·I·cosφ` | 电流由功率推导 | 误差 <1% |
-| 故障物理联动 | 4 类故障注入（堵塞/气蚀/泄漏/结垢），多参数耦合 | 泄漏→压力降+湿度升+液位降同现 |
+| 故障物理联动 | 8 类故障注入：堵塞/气蚀/泄漏/结垢，新增换热衰退/水质恶化/柜风机失效/补水阀卡开 | 多参数耦合；旧四类回归指纹一致，新增机制及数据核验见[扩展报告](design/HARD_FAULT_DATASET.md) |
 
 ### 4.2 数据质量管控（perception/quality.py）
 
@@ -250,7 +254,7 @@ python -c "from storage import TimeSeriesDB; print(TimeSeriesDB().stats())"  # �
 
 ```
 config/        集中参数设置（settings.yaml）+ 统一日志配置
-simulator/     物理机理数据仿真（含 4 类故障注入）
+simulator/     物理机理数据仿真（含 8 类故障注入；既有评测仍为四类）
 perception/    数据接入与质量管控
 detection/     L1 规则引擎 / L2 预测(GRU/PatchTST/TimesFM/Chronos 可切换)+异常检测(VAE+IF / Anomaly-Transformer 可切换) / 模型路由
 Anomaly-Transformer/  官方 Anomaly-Transformer 源码 + MSL 基准权重（L2 异常检测轨，detection/ 复用其 model/ 结构）
@@ -381,5 +385,3 @@ logs/error.log     # ERROR 及以上错误日志
 
 关键日志埋点：服务初始化、实时流接入/断开、L1/L2/L3 预警触发、根因诊断结果、工单生成、编排工作流执行。
 自定义日志级别/目录见 `config/settings.yaml` 的 `logging` 段，或环境变量 `MFF_LOGGING_LEVEL=DEBUG`。
-
-
