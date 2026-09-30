@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Native-chat-template LoRA SFT runner for Spark-X2.5-4B and MiniCPM5-2B.
+"""Native-chat-template SFT runner (LoRA by default, or finetuning_type: full).
 
 This runner intentionally does not depend on a LLaMA-Factory template fork. It
 uses the tokenizer shipped with the base model, which keeps training and vLLM
@@ -217,6 +217,9 @@ def main() -> int:
     ap.add_argument("--output-dir", help="override output_dir without changing the experiment YAML")
     args = ap.parse_args()
     cfg = load_config(args.config)
+    finetuning_type = cfg.get("finetuning_type", "lora")
+    if finetuning_type not in ("lora", "full"):
+        raise ValueError(f"unsupported finetuning_type: {finetuning_type}")
     if args.output_dir:
         cfg["output_dir"] = args.output_dir
     output_dir = Path(cfg["output_dir"])
@@ -267,26 +270,32 @@ def main() -> int:
     if bool(cfg.get("gradient_checkpointing", True)):
         model.enable_input_require_grads()
 
-    target_modules = cfg.get("target_modules", "all-linear")
-    if isinstance(target_modules, str) and "," in target_modules:
-        target_modules = [x.strip() for x in target_modules.split(",") if x.strip()]
-    peft_cfg = LoraConfig(
-        task_type="CAUSAL_LM",
-        r=int(cfg.get("lora_rank", 32)),
-        lora_alpha=int(cfg.get("lora_alpha", 64)),
-        lora_dropout=float(cfg.get("lora_dropout", 0.05)),
-        target_modules=target_modules,
-        bias="none",
-    )
-    model = get_peft_model(model, peft_cfg)
-    model.print_trainable_parameters()
+    if finetuning_type == "lora":
+        target_modules = cfg.get("target_modules", "all-linear")
+        if isinstance(target_modules, str) and "," in target_modules:
+            target_modules = [x.strip() for x in target_modules.split(",") if x.strip()]
+        peft_cfg = LoraConfig(
+            task_type="CAUSAL_LM",
+            r=int(cfg.get("lora_rank", 32)),
+            lora_alpha=int(cfg.get("lora_alpha", 64)),
+            lora_dropout=float(cfg.get("lora_dropout", 0.05)),
+            target_modules=target_modules,
+            bias="none",
+        )
+        model = get_peft_model(model, peft_cfg)
+        model.print_trainable_parameters()
+    else:
+        # Keep full-model trainable weights BF16; FP32 promotion exceeds 24 GiB.
+        model.requires_grad_(True)
+        print(f"[full] trainable parameters={sum(p.numel() for p in model.parameters())}", flush=True)
     if args.dry_run:
-        print("[dry-run] tokenizer/model/LoRA setup succeeded", flush=True)
+        print(f"[dry-run] tokenizer/model/{finetuning_type} setup succeeded", flush=True)
         return 0
 
     output_dir.mkdir(parents=True, exist_ok=True)
     write_json(output_dir / "resolved_config.json", cfg)
-    trainable, total = model.get_nb_trainable_parameters()
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in model.parameters())
     packages = {}
     for package in ("torch", "transformers", "peft", "accelerate", "bitsandbytes", "datasets", "llamafactory"):
         try:
@@ -294,6 +303,7 @@ def main() -> int:
         except importlib.metadata.PackageNotFoundError:
             packages[package] = None
     manifest = {
+        "finetuning_type": finetuning_type,
         "started_utc": datetime.now(timezone.utc).isoformat(),
         "command": [sys.executable, *sys.argv], "python": platform.python_version(),
         "packages": packages, "torch_cuda": torch.version.cuda,
@@ -341,7 +351,7 @@ def main() -> int:
     metrics.update({"train_samples": len(train_data), "eval_samples": len(eval_data) if eval_data else 0})
     metrics.update({"global_step": trainer.state.global_step, "train_wall_seconds": train_wall,
                     "cuda_memory_train_including_periodic_eval": train_memory})
-    write_json(output_dir / "lora_train_metrics.json", metrics)
+    write_json(output_dir / f"{finetuning_type}_train_metrics.json", metrics)
     if eval_data:
         if has_cuda:
             torch.cuda.reset_peak_memory_stats()
@@ -351,7 +361,7 @@ def main() -> int:
     manifest.update({"finished_utc": datetime.now(timezone.utc).isoformat(),
                      "main_wall_seconds": time.perf_counter() - started, "status": "completed"})
     write_json(output_dir / "run_manifest.json", manifest)
-    print(f"[done] adapter saved to {output_dir}", flush=True)
+    print(f"[done] {finetuning_type} weights saved to {output_dir}", flush=True)
     return 0
 
 

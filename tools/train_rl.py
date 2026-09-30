@@ -191,9 +191,13 @@ def build_prompt_dataset(cfg: dict, tokenizer, limit: int = 0):
     examples = []
     for r in rows:
         user = next(m["content"] for m in r["messages"] if m["role"] == "user")
+        gold = r["meta"]["gold"]
+        if cfg.get("reward_schema") == "hard_faults_v1":
+            gold = json.dumps({"root_causes": r["meta"]["gold_causes"],
+                               "needs_more_data": r["meta"]["needs_more_data"]}, ensure_ascii=False)
         examples.append({"prompt": render_prompt(tokenizer, r["messages"]),
                          "user_text": user,
-                         "gold": r["meta"]["gold"],
+                         "gold": gold,
                          "kind": r["meta"].get("kind", "")})
     return Dataset.from_list(examples), rows
 
@@ -325,7 +329,12 @@ def main() -> int:
         train_ds, rows = build_prompt_dataset(cfg, tokenizer, args.max_samples)
         dm = {"train": data_manifest(cfg["prompt_file"], rows)}
         if args.algo == "grpo":
-            reward_funcs = [make_reward_func({}, RewardScorer(), on_score=monitor.on_score)]
+            if cfg.get("reward_schema") == "hard_faults_v1":
+                from tools.hard_fault_metrics import HardFaultScorer
+                scorer = HardFaultScorer(cfg.get("ontology_file"))
+            else:
+                scorer = RewardScorer()
+            reward_funcs = [make_reward_func({}, scorer, on_score=monitor.on_score)]
 
     print(f"[data] train={len(train_ds)} eval={len(eval_ds) if eval_ds else 0}", flush=True)
 
@@ -505,7 +514,9 @@ def main() -> int:
         "prompt_tokens": {"max": p_max, "mean": round(p_mean, 1),
                           "max_prompt_length": limit_key},
         "script_sha256": sha256(__file__), "config_sha256": sha256(args.config),
-        "reward_script_sha256": sha256(ROOT / "tools" / "rl_reward.py"),
+        "reward_schema": cfg.get("reward_schema", "legacy_four_faults"),
+        "reward_script_sha256": sha256(ROOT / "tools" / (
+            "hard_fault_metrics.py" if cfg.get("reward_schema") == "hard_faults_v1" else "rl_reward.py")),
         "feedback_source": cfg.get("feedback_source", "unspecified"),
         "trainable_parameters": sum(p.numel() for p in trainer.model.parameters() if p.requires_grad),
         "total_parameters": sum(p.numel() for p in trainer.model.parameters()),

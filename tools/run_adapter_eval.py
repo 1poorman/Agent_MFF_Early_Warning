@@ -38,6 +38,8 @@ def main() -> int:
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--dataset", default="data/sft/eval.jsonl")
+    parser.add_argument("--schema", choices=["legacy", "hard_faults_v1"], default="legacy")
+    parser.add_argument("--max-tokens", type=int, default=4000)
     parser.add_argument("--vllm", default="/home/huachenghao/.conda/envs/mff_sft_serve/bin/vllm")
     args = parser.parse_args()
     if args.runs < 1:
@@ -60,12 +62,15 @@ def main() -> int:
         "model": str(Path(args.model).resolve()), "served_name": args.name,
         "gpu": args.gpu, "server_command": command, "evaluation_commands": [],
         "dataset": str(dataset.resolve()), "dataset_sha256": hashlib.sha256(dataset.read_bytes()).hexdigest(),
-        "n": len(rows), "runs": args.runs,
-        "inference": {"enable_thinking": False, "temperature": 0.1, "max_tokens": 4000,
+        "n": len(rows), "runs": args.runs, "schema": args.schema,
+        "inference": {"enable_thinking": False, "temperature": 0.1, "max_tokens": args.max_tokens,
+                      "stop": ["<|im_end|>"] if args.schema == "hard_faults_v1" else None,
                       "server_seed": 42, "top_p": 0.95,
                       "top_p_source": "local model generation_config.json",
                       "arbitration": "off", "warmup_requests": 3},
-        "repeat_note": "eval_sft_model --seed is a run label, not a per-request sampling seed",
+        "repeat_note": ("eval_hard_model --seed is passed as the per-request sampling seed"
+                        if args.schema == "hard_faults_v1" else
+                        "eval_sft_model --seed is a run label, not a per-request sampling seed"),
         "started_utc": datetime.now(timezone.utc).isoformat(), "status": "starting",
     }
     generation_config = json.loads((Path(args.model) / "generation_config.json").read_text())
@@ -112,18 +117,22 @@ def main() -> int:
             for row in rows[:3]:
                 request_json(url + "/chat/completions", {
                     "model": args.name, "messages": row["messages"][:-1],
-                    "temperature": 0.1, "max_tokens": 4000,
+                    "temperature": 0.1, "max_tokens": args.max_tokens,
+                    **({"stop": ["<|im_end|>"]} if args.schema == "hard_faults_v1" else {}),
                     "chat_template_kwargs": {"enable_thinking": False},
                 }, timeout=180)
             manifest["status"] = "evaluating"
             save_manifest()
             for repeat in range(1, args.runs + 1):
                 result_path = output / f"run{repeat}.jsonl"
-                eval_command = [sys.executable, "tests/eval_sft_model.py", "--url", url,
+                evaluator = "tools/eval_hard_model.py" if args.schema == "hard_faults_v1" else "tests/eval_sft_model.py"
+                eval_command = [sys.executable, evaluator, "--url", url,
                                 "--model", args.name, "--dataset", args.dataset,
-                                "--arbitration", "off", "--temperature", "0.1",
-                                "--max-tokens", "4000", "--seed", str(repeat),
+                                "--temperature", "0.1",
+                                "--max-tokens", str(args.max_tokens), "--seed", str(repeat),
                                 "--out", str(result_path), "--report", str(output / "report.md")]
+                if args.schema == "legacy":
+                    eval_command += ["--arbitration", "off"]
                 manifest["evaluation_commands"].append(eval_command)
                 save_manifest()
                 print(f"[eval] repeat={repeat}/{args.runs}", flush=True)
@@ -133,7 +142,8 @@ def main() -> int:
                 summary = json.loads(result_path.with_suffix(".summary.json").read_text())
                 if summary["n"] != len(rows) or summary["errors"]:
                     raise RuntimeError(f"evaluation incomplete or endpoint errors: {result_path}")
-                print(f"[result] repeat={repeat} accuracy={summary['accuracy']['fault_subset']:.4%} "
+                accuracy = summary["set_exact"] if args.schema == "hard_faults_v1" else summary["accuracy"]["fault_subset"]
+                print(f"[result] repeat={repeat} accuracy={accuracy:.4%} "
                       f"wall={summary['wall_s']}s", flush=True)
             manifest["status"] = "completed"
         except BaseException as exc:
