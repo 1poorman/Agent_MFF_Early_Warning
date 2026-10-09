@@ -4,7 +4,8 @@
 本记录补充 [LoRA / 全参 SFT 对照](SFT_LORA_COMPARISON.md)。
 
 后续已完成[八类故障仿真与独立难例数据集](HARD_FAULT_DATASET.md)，
-该扩展尚未重训模型；本报告分数仍对应下述冻结四类数据。
+并于 2026-09-30 完成[八类模型训练与对照评估](HARD_POSTTRAINING_COMPARISON.md)；
+本报告分数仍对应下述冻结四类数据，八类结果单独报告。
 
 ## 对照定义
 

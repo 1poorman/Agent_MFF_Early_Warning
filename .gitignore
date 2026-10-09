@@ -61,3 +61,16 @@ opencode.json
 
 # ---- 设计文件 ----
 design/
+
+# 八类故障后训练交付物（其余本地参考资料继续忽略）
+!design/
+design/*
+!design/HARD_POSTTRAINING_COMPARISON.md
+!design/assets/
+design/assets/*
+!design/assets/minicpm5_hard_comparison.png
+!design/assets/minicpm5_hard_comparison.svg
+!tests/
+tests/*
+!tests/test_hard_posttraining.py
+!tests/test_hard_analysis.py

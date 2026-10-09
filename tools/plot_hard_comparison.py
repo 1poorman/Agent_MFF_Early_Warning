@@ -12,9 +12,10 @@ import matplotlib.pyplot as plt
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run-dir', type=Path, default=Path('logs/hard_minicpm5_20260929'))
+    parser.add_argument('--analysis', type=Path, help='analysis.json from a separate audit directory')
     parser.add_argument('--out-prefix', type=Path, default=Path('design/assets/minicpm5_hard_comparison'))
     args = parser.parse_args()
-    analysis = json.loads((args.run_dir / 'analysis.json').read_text())['methods']
+    analysis = json.loads((args.analysis or args.run_dir / 'analysis.json').read_text())['methods']
     comparison = json.loads((args.run_dir / 'comparison.json').read_text())
     plt.rcParams.update({'font.size': 10, 'axes.spines.top': False,
                          'axes.spines.right': False, 'svg.fonttype': 'none'})
