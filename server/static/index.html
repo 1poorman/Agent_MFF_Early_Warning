@@ -3,137 +3,40 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>中频炉水冷系统预警智能体</title>
+<title>中频感应炉 · 水冷安全监测</title>
 <link rel="stylesheet" href="/static/qa.css">
 <script src="/static/qa.js" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
-<style>
-  * { margin:0; padding:0; box-sizing:border-box; }
-  html,body { height:100%; overflow:hidden; }
-  body { font-family:"PingFang SC","Microsoft YaHei",sans-serif; background:#0d1421; color:#dce3ee;
-         display:flex; flex-direction:column; }
-  header { background:linear-gradient(90deg,#132038,#1a2c4e); padding:7px 18px; display:flex;
-           justify-content:space-between; align-items:center; border-bottom:1px solid #233457; flex:0 0 auto; }
-  header h1 { font-size:16px; font-weight:600; color:#5ec1ff; }
-  .badge { display:inline-block; padding:1px 9px; border-radius:9px; margin-left:6px; font-size:11px; }
-  .b-ok { background:#1c4d2e; color:#5ee08a; } .b-warn { background:#5e4a16; color:#ffcf5e; }
-  .b-run { background:#1f6feb; color:#fff; }
-
-  .controls { display:flex; gap:7px; align-items:center; padding:6px 18px; background:#101a2c;
-              border-bottom:1px solid #1d2f52; flex-wrap:nowrap; flex:0 0 auto; }
-  .controls label { font-size:11px; color:#7f93b8; white-space:nowrap; }
-  select,button { background:#1c2c4a; color:#dce3ee; border:1px solid #2e4a7a; border-radius:5px;
-                  padding:4px 10px; font-size:12px; cursor:pointer; }
-  button:hover { background:#27406b; }
-  button.primary { background:#1f6feb; border-color:#1f6feb; }
-  button.danger { background:#8a2626; border-color:#8a2626; }
-  button:disabled { opacity:.45; cursor:not-allowed; }
-  .file-btn { background:#1c2c4a; border:1px dashed #2e4a7a; border-radius:5px; padding:4px 10px;
-              font-size:12px; color:#8fb3e8; cursor:pointer; white-space:nowrap; }
-  .file-btn:hover { background:#27406b; }
-  .file-btn.disabled { opacity:.4; cursor:not-allowed; color:#6b7d9e; border-color:#223456; }
-  .file-btn.disabled:hover { background:#1c2c4a; }
-  .hint { font-size:10px; color:#6b7d9e; margin-left:auto; white-space:nowrap; }
-
-  .layout { flex:1 1 auto; min-height:0; display:grid; gap:9px; padding:9px 18px 12px;
-            grid-template-columns: 1.55fr 1fr 1.05fr;
-            grid-template-rows: minmax(0,1fr); }
-  .card { background:#141d2e; border:1px solid #223456; border-radius:9px; padding:9px 11px;
-          display:flex; flex-direction:column; min-height:0; min-width:0; overflow:hidden; }
-  .card h2 { font-size:12.5px; color:#8fb3e8; font-weight:600; flex:0 0 auto; margin-bottom:6px;
-             display:flex; justify-content:space-between; align-items:center; }
-  .agent-tag { font-size:10px; background:#1c2c4a; color:#5ec1ff; border:1px solid #2e4a7a;
-               padding:1px 7px; border-radius:8px; margin-right:6px; white-space:nowrap; }
-  .cnt { font-size:10px; color:#5ee08a; font-weight:400; }
-
-  .dm-card { grid-column:1; }
-  .metrics { display:grid; grid-template-columns:repeat(6,1fr); gap:7px; margin-bottom:7px; flex:0 0 auto; }
-  .metric { background:#182640; border:1px solid #26406b; border-radius:7px; padding:5px 3px; text-align:center; }
-  .metric .v { font-size:16px; font-weight:700; color:#5ec1ff; }
-  .metric .l { font-size:9.5px; color:#7f93b8; margin-top:2px; }
-  #chart { flex:1 1 auto; min-height:170px; max-height:300px; padding-bottom:2px; }  /* 曲线窗口：底部为 X 轴刻度留白 */
-  .qline { flex:0 0 auto; font-size:10.5px; color:#6b7d9e; margin-top:16px; padding-top:8px;
-           border-top:1px dashed #223456; }  /* 分隔线 + 足够间距，彻底避开 X 轴刻度 */
-  .qline b { color:#5ee08a; font-weight:600; }
-
-  .wa-card { grid-column:2; }
-  .sec { border:1px solid #1d2f52; border-radius:7px; padding:5px 7px; margin-bottom:6px; display:flex; flex-direction:column; min-height:0; }
-  .sec .sh { font-size:11px; font-weight:600; margin-bottom:3px; display:flex; justify-content:space-between; }
-  .s-l1 .sh { color:#ffe14d; } .s-l2 .sh { color:#ffae42; } .s-l3 .sh { color:#ff8a8a; }
-  .panel { flex:1 1 auto; min-height:0; overflow-y:auto; font-family:monospace; font-size:10.5px;
-           background:#0a1120; padding:5px 7px; border-radius:5px; }
-  .panel div { padding:1.5px 0; border-bottom:1px solid #16223a; }
-  .lv1 { color:#ffe14d; } .lv2 { color:#ffae42; }
-  .score { font-size:15px; font-weight:700; color:#5ee08a; }
-  .s-l1 { flex:0 0 88px; } .s-l2 { flex:0 0 168px; }
-  .s-l3 { flex:1 1 auto; }
-  .s-l3 .panel { background:transparent; padding:0; }
-  .wo { background:#101a2c; border-left:3px solid #ff8a8a; border-radius:5px; padding:5px 8px;
-        margin-bottom:5px; font-size:10.5px; flex:0 0 auto; }
-  .wo .row { margin:2px 0; color:#b9c6dd; }
-  .wo b.rc { color:#ff8a8a; font-size:11.5px; }
-  .muted { color:#6b7d9e; font-size:10.5px; }
-  /* L2 布局：异常分 + GRU 预测 并列 */
-  .l2-grid { display:grid; grid-template-columns:96px 1fr; gap:6px; margin-bottom:4px; flex:0 0 auto; }
-  .l2-item { background:#182640; border:1px solid #26406b; border-radius:6px; padding:4px 6px; min-width:0; }
-  .l2-item .t { font-size:9.5px; color:#7f93b8; }
-  .bar { height:5px; background:#0a1120; border-radius:3px; overflow:hidden; margin:3px 0 1px; }
-  #anomaly-bar { height:100%; width:0%; background:#5ee08a; transition:width .3s; }
-  .fc-msg { font-size:10px; color:#5ec1ff; line-height:1.4; }
-  /* L3 上下文：判断依据 + 维修记录 */
-  .ctx { margin-top:4px; border-top:1px dashed #223456; padding-top:4px; }
-  .ctx-item { font-size:10px; color:#9fb2cf; margin:2px 0; display:flex; gap:6px; line-height:1.45; }
-  .ctx-k { flex:0 0 56px; color:#5ec1ff; font-weight:600;
-           font-family:"PingFang SC","Microsoft YaHei",sans-serif; }
-  .ctx-mt { flex-direction:column; }
-  .ctx-mt .ctx-k { flex:0 0 auto; }
-
-  .right-col { grid-column:3; display:grid; gap:9px;
-               grid-template-rows: minmax(0,1.5fr) minmax(0,1fr); }
-  .wo-big { background:#101a2c; border-left:3px solid #ff5e5e; border-radius:6px; padding:8px 10px;
-            margin-bottom:6px; font-size:11px; flex:0 0 auto; }
-  .wo-big.orange { border-left-color:#ffae42; } .wo-big.yellow { border-left-color:#ffe14d; }
-  .wo-big .row { margin:3px 0; color:#b9c6dd; }
-  .wo-big b.rc { color:#ff8a8a; font-size:13px; }
-  .wo-big .tag { font-size:10px; padding:1px 7px; border-radius:7px; margin-right:5px; }
-  .t-red { background:#5e1c1c; color:#ff8a8a; } .t-orange { background:#5e4216; color:#ffcf8a; }
-  .t-yellow { background:#5e5a16; color:#ffe14d; }
-  /* 工单输出：通知 / SOP / 备件 / 应急 并列 2x2 */
-  .wo-grid { display:grid; grid-template-columns:1fr 1fr; gap:5px; margin-top:6px; }
-  .wg { background:#141d2e; border:1px solid #223456; border-radius:5px; padding:4px 7px; min-width:0; }
-  .wg-t { font-size:10px; color:#8fb3e8; font-weight:600; margin-bottom:2px; }
-  .wg-b { font-size:10px; color:#b9c6dd; line-height:1.45; overflow-wrap:break-word; }
-  .wg-b .ok { color:#5ee08a; } .wg-b .warn { color:#ffae42; }
-  #fh-area { flex:1 1 auto; min-height:0; overflow-y:auto; }
-  .stats-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; flex:0 0 auto; }
-  .stat { background:#182640; border:1px solid #26406b; border-radius:6px; padding:6px; text-align:center; }
-  .stat .v { font-size:16px; font-weight:700; color:#5ee08a; }
-  .stat .l { font-size:9.5px; color:#7f93b8; margin-top:2px; }
-  #co-log { font-family:monospace; font-size:10px; color:#5ee08a; margin-top:6px;
-            flex:1 1 auto; min-height:0; overflow-y:auto; }
-</style>
+<link rel="stylesheet" href="/static/dashboard.css">
 </head>
 <body>
 <header>
-  <h1>中频炉水冷系统预警智能体 · 四大智能体监控</h1>
-  <div><span id="sys-status">检测中...</span><span id="run-status"></span>
-    <button id="qa-toggle" aria-controls="qa-panel" aria-expanded="false">知识问答</button></div>
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true"><path d="M12 9h24l-3 29H15Z" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 17h32M8 24h32M8 31h32M18 42h12" fill="none" stroke="currentColor" stroke-width="2"/><path d="M19 9V5m10 4V5" stroke="currentColor" stroke-width="2"/></svg>
+    <div><p class="eyebrow">冶金装备 · 中频感应熔炼</p><h1>炉体水冷安全监测</h1></div>
+    <span class="demo-label">仿真演示</span>
+  </div>
+  <div class="header-actions"><span id="sys-status">服务连接中…</span><span id="run-status"><span class="badge">待机</span></span>
+    <button id="qa-toggle" aria-controls="qa-panel" aria-expanded="false">知识问答 <span aria-hidden="true">↗</span></button></div>
 </header>
 
 <div class="controls">
-  <label>故障场景</label>
+  <div class="control-group source-controls">
+  <label for="fault">演示工况</label>
   <select id="fault" onchange="onFaultChange(this.value)">
-    <option value="">正常工况</option>
+    <option value="">正常熔炼</option>
     <option value="filter_clog">过滤器堵塞</option>
     <option value="pump_cavitation">水泵气蚀</option>
     <option value="pipe_leak">管道泄漏</option>
     <option value="scale_buildup">线圈结垢(缓变)</option>
-    <option value="custom">自定义上传</option>
+    <option value="custom">上传时序回放</option>
   </select>
   <label class="file-btn" id="upload-btn" title="支持 data/simulated/*.csv 同格式时序数据；选择「自定义上传」后可用，上传即选定为监测数据源">
-    上传时序数据<input type="file" id="file-input" accept=".csv,.json,.jsonl" hidden onchange="uploadFile(this)">
+    选择数据文件<input type="file" id="file-input" accept=".csv,.json,.jsonl" class="file-input" onchange="uploadFile(this)">
   </label>
-  <label>倍速</label>
+  </div>
+  <div class="control-group playback-controls">
+  <label for="speed">回放速度</label>
   <select id="speed">
     <option value="10">10x</option>
     <option value="20" selected>20x</option>
@@ -141,83 +44,99 @@
   </select>
   <button class="primary" id="btn-start" onclick="startStream()">▶ 开始监测</button>
   <button class="danger" id="btn-stop" onclick="stopStream()" disabled>■ 停止</button>
-  <label>预测模型</label>
+  </div>
+  <details class="display-settings">
+    <summary>分析与显示设置</summary>
+    <div class="settings-fields">
+  <label for="fmodel">预测模型</label>
   <select id="fmodel" onchange="setForecastModel(this.value)">
     <option value="gru">GRU 快轨</option>
     <option value="patchtst">PatchTST 精轨</option>
     <option value="timesfm">TimesFM-2.5</option>
   </select>
-  <label>监测模式</label>
+  <label for="smode">监测曲线</label>
   <select id="smode" onchange="setSensorMode(this.value)">
-    <option value="normal">常规监测（6 项）</option>
+    <option value="normal">常用参数（5 项）</option>
     <option value="full">完整监测（12 项）</option>
   </select>
-  <label>压/流量轴</label>
+  <label for="yscale">压力 / 流量轴</label>
   <select id="yscale" onchange="setYScale(this.value)">
     <option value="linear">线性</option>
     <option value="log" selected>对数(集中)</option>
   </select>
-  <span class="hint">数据实时流动 · L1/L2 毫秒级 · L3 后台推理(3~5s) · ①②③④ 自动联动</span>
+    </div>
+  </details>
 </div>
 
+<div class="workflow-strip" aria-label="预警处置流程">
+  <span><i>01</i> 运行参数采集</span><b aria-hidden="true">→</b><span><i>02</i> 设备风险研判</span><b aria-hidden="true">→</b><span><i>03</i> 检修与应急处置</span><b aria-hidden="true">→</b><span><i>04</i> 反馈与知识沉淀</span>
+  <small>中频感应炉 / 闭式冷却回路</small>
+</div>
 <div class="layout">
   <!-- ① 数据管理智能体 -->
   <div class="card dm-card">
-    <h2><span><span class="agent-tag">① 数据管理智能体</span>传感器接收 · 预处理 · 规整输出</span>
+    <h2><span><span class="agent-tag">01 · 数据管理智能体</span>炉体与冷却回路</span>
         <span class="cnt" id="pt-count">0 点</span></h2>
-    <div class="metrics">
-      <div class="metric"><div class="v" id="m-inlet">--</div><div class="l">进水 ℃</div></div>
-      <div class="metric"><div class="v" id="m-out">--</div><div class="l">出水 ℃</div></div>
-      <div class="metric"><div class="v" id="m-press">--</div><div class="l">压力 kPa</div></div>
-      <div class="metric"><div class="v" id="m-flow">--</div><div class="l">流量 L/s</div></div>
-      <div class="metric"><div class="v" id="m-furn">--</div><div class="l">炉温 ℃</div></div>
-      <div class="metric"><div class="v" id="m-hum">--</div><div class="l">湿度 %RH</div></div>
+    <div class="cooling-circuit" aria-label="冷却回路示意：供水进入感应线圈，带走炉体热量后回水换热">
+      <div class="circuit-side"><span class="circuit-label">供水侧</span><b>进水 · 压力 · 流量</b></div>
+      <svg class="circuit-furnace" viewBox="0 0 160 74" aria-hidden="true"><path d="M0 25h43m74 0h43" stroke="#76b7ca" stroke-width="2"/><path d="m35 21 8 4-8 4m117-8 8 4-8 4" fill="none" stroke="#76b7ca" stroke-width="2"/><path d="M54 8h52l-5 48H59Z" fill="#e9a34b0f" stroke="#b0b9bf" stroke-width="2"/><path d="M64 31h32l-2 17H66Z" fill="#e9a34b" opacity=".65"/><path d="M51 19h58m-60 9h62m-60 9h58m-56 9h54" stroke="#e9a34b" stroke-width="2"/><path d="M66 62h28" stroke="#b0b9bf" stroke-width="2"/><path d="M12 40v28h136V40" stroke="#76b7ca" stroke-width="1" stroke-dasharray="4 4" fill="none"/></svg>
+      <div class="circuit-side"><span class="circuit-label">回水侧</span><b>出水 · 换热</b></div>
+      <span class="circuit-caption">感应线圈水冷示意</span>
     </div>
-    <div id="chart"></div>
-    <div class="qline">实时接收 <b id="pt-count2">0</b> 条 · 输出格式 <b>1Hz/1位小数（L1/L2 直接可用）</b> · 虚线=预测模型未来10min趋势</div>
+    <div class="metrics">
+      <div class="metric"><div class="l">进水温度 <small>℃</small></div><div class="v" id="m-inlet">--</div></div>
+      <div class="metric metric-warm"><div class="l">出水温度 <small>℃</small></div><div class="v" id="m-out">--</div></div>
+      <div class="metric"><div class="l">管路压力 <small>kPa</small></div><div class="v" id="m-press">--</div></div>
+      <div class="metric"><div class="l">冷却水流量 <small>L/s</small></div><div class="v" id="m-flow">--</div></div>
+      <div class="metric metric-warm"><div class="l">炉内温度 <small>℃</small></div><div class="v" id="m-furn">--</div></div>
+      <div class="metric"><div class="l">柜体环境湿度 <small>%RH</small></div><div class="v" id="m-hum">--</div></div>
+    </div>
+    <div class="chart-heading"><h3>冷却回路运行趋势</h3><span id="chart-state">等待监测数据</span></div>
+    <div class="chart-wrap"><div id="chart"></div><div id="chart-empty"><b>从一个熔炼工况开始</b><span>选择演示工况，点击“开始监测”<br>观察冷却参数、预警与检修处置过程</span></div></div>
+    <div class="qline"><span>已接收 <b id="pt-count2">0</b> 条 · <b>1 Hz</b></span><span>虚线表示预测趋势</span></div>
   </div>
 
   <!-- ② 预警分析智能体 -->
   <div class="card wa-card">
-    <h2><span><span class="agent-tag">② 预警分析智能体</span>多级预警 · 根因诊断</span>
+    <h2><span><span class="agent-tag">02 · 预警分析智能体</span>设备风险研判</span>
         <span class="cnt" id="wa-level">—</span></h2>
     <div class="sec s-l1">
-      <div class="sh"><span>L1 规则预警（毫秒级）</span><span class="cnt" id="l1-cnt">0</span></div>
+      <div class="sh"><span><b class="level-marker">L1</b> 参数越限预警</span><span class="cnt" id="l1-cnt">0</span></div>
       <div class="panel" id="l1-panel"><div class="muted">暂无预警</div></div>
     </div>
     <div class="sec s-l2">
-      <div class="sh"><span>L2 异常检测 + 时序预测（<span id="fmodel-name">GRU</span>）</span><span class="cnt" id="l2-cnt">0</span></div>
+      <div class="sh"><span><b class="level-marker">L2</b> 异常与趋势 <small id="fmodel-name">GRU</small></span><span class="cnt" id="l2-cnt">0</span></div>
       <div class="l2-grid">
         <div class="l2-item">
-          <div class="t">异常分 VAE+IF</div>
-          <span class="score" id="anomaly-score">0.00</span>
+          <div class="t">综合异常分</div>
+          <span class="score" id="anomaly-score">--</span>
           <div class="bar"><div id="anomaly-bar"></div></div>
           <div class="t">阈值 0.6</div>
         </div>
         <div class="l2-item">
           <div class="t" id="fc-title">GRU 出水温度预测（残差学习）</div>
-          <div class="fc-msg" id="forecast-msg">等待数据≥2min...</div>
+          <div class="fc-msg" id="forecast-msg">开始监测后生成趋势预测</div>
         </div>
       </div>
       <div class="muted" id="trend-msg" style="margin-bottom:2px"></div>
-      <div class="muted" id="dew-ind" style="font-size:10.5px;margin-bottom:3px">凝露监测中...</div>
+      <div class="muted" id="dew-ind">柜体凝露风险 · 等待数据</div>
       <div class="panel" id="l2-panel"><div class="muted">暂无预警</div></div>
     </div>
     <div class="sec s-l3">
-      <div class="sh"><span>L3 大模型根因诊断（三层防幻觉）</span><span class="cnt" id="l3-cnt">0</span></div>
-      <div class="panel" id="l3-area"><div class="muted">暂无诊断。L1/L2 触发后后台推理（3~5s）。</div></div>
+      <div class="sh"><span><b class="level-marker">L3</b> 故障根因诊断</span><span class="cnt" id="l3-cnt">0</span></div>
+      <div class="panel" id="l3-area"><div class="empty-state"><b>等待异常事件</b><p>结合冷却参数、设备知识与检修记录，分析可能的故障原因。</p></div></div>
     </div>
   </div>
 
   <!-- ③ 故障处置 + ④ 持续优化 -->
   <div class="right-col">
     <div class="card">
-      <h2><span><span class="agent-tag">③ 故障处置智能体</span>工单 · 应急 · 通知</span>
+      <h2><span><span class="agent-tag">03 · 故障处置智能体</span>检修工单与处置</span>
           <span class="cnt" id="wo-cnt">0</span></h2>
-      <div id="fh-area"><div class="muted">暂无工单。L3 诊断完成后自动生成并推送。</div></div>
+      <div id="fh-area"><div class="empty-state"><span class="empty-symbol" aria-hidden="true">↳</span><b>等待生成检修工单</b><p>诊断完成后，展示处置步骤、所需备件及应急预案。</p></div></div>
     </div>
     <div class="card">
-      <h2><span><span class="agent-tag">④ 持续优化智能体</span>反馈 · 知识库</span>
+      <h2><span><span class="agent-tag">04 · 持续优化智能体</span>检修反馈与知识沉淀</span>
           <span class="cnt" id="retrain">未触发</span></h2>
       <div class="stats-grid">
         <div class="stat"><div class="v" id="fb-total">0</div><div class="l">归档反馈</div></div>
@@ -232,7 +151,7 @@
 
 <aside id="qa-panel" aria-labelledby="qa-title" hidden>
   <div class="qa-heading">
-    <div><h2 id="qa-title">知识问答助手</h2><p>查询工况、维修记录与处置说明</p></div>
+    <div><h2 id="qa-title">设备知识问答</h2><p>中频炉工况 · 检修记录 · 故障处置</p></div>
     <button id="qa-close" aria-label="关闭知识问答">关闭</button>
   </div>
   <div id="qa-messages" role="log" aria-live="polite" aria-relevant="additions" tabindex="0"></div>
@@ -297,11 +216,12 @@ function getLegendData(){ return SENSORS.map(s=>s[1]).concat(['预测']); }
 
 chart.setOption({
   backgroundColor:'transparent',
+  textStyle:{fontFamily:'"Microsoft YaHei","SimHei",sans-serif'},
   tooltip:{trigger:'axis'},
   // 图例移到顶部：Y 轴名垂直居中不冲突，底部 X 轴刻度区干净
   legend:{data: getLegendData(),
           top:0, itemWidth:12, itemHeight:8, type:'scroll',
-          textStyle:{color:'#b9c6dd',fontSize:9}},
+          textStyle:{color:'#aabeca',fontSize:10}},
   grid:{left:62,right:56,top:30,bottom:30},  /* bottom 加大：X 轴刻度在 canvas 内留足空间 */
   xAxis:{type:'category', data:[], axisLabel:{color:'#7f93b8',fontSize:10}},
   yAxis:[
@@ -314,7 +234,13 @@ chart.setOption({
   series: buildSeries({})
 });
 
+function setChartState(label, hasData){
+  document.getElementById('chart-state').textContent = label;
+  document.getElementById('chart-empty').hidden = hasData;
+}
+
 function pushPoint(d){
+  setChartState('正在回放 · ' + (d.timestamp||'').slice(11), true);
   const m = d.metrics, t = (d.timestamp||'').slice(11);
   ptTotal++;
   buf.ts.push(t);
@@ -344,7 +270,7 @@ function pushPoint(d){
   document.getElementById('pt-count').textContent = buf.ts.length + ' 点';
   document.getElementById('pt-count2').textContent = ptTotal;
 }
-function setText(id, v){ if(v!==undefined && v!==null) document.getElementById(id).textContent = (+v).toFixed(1); }
+function setText(id, v){ document.getElementById(id).textContent = v!==undefined && v!==null && Number.isFinite(+v) ? (+v).toFixed(1) : '--'; }
 
 // 切换压/流量 y 轴：对数刻度使各变量量程集中（压力150-300 与 流量4-8 在对数下视觉接近）
 function setYScale(mode){
@@ -382,6 +308,7 @@ function renderDew(d){
 function renderL1(list){
   if(!list || !list.length) return;
   const p = document.getElementById('l1-panel');
+  p.querySelectorAll('.muted').forEach(el=>el.remove());
   list.forEach(a=>{
     l1n++;
     p.insertAdjacentHTML('afterbegin', `<div class="lv1">[${(a.timestamp||'').slice(11)}] <b>${a.rule_id}</b> ${a.message}</div>`);
@@ -393,6 +320,9 @@ function renderL1(list){
 function renderL2(l2){
   if(!l2) return;
   const score = l2.anomaly_score||0;
+  if(score > 0.6 || l2.exceed_eta || l2.forecast?.max_value > 55){
+    document.querySelectorAll('#l2-panel > .muted').forEach(el=>el.remove());
+  }
   const sc = document.getElementById('anomaly-score');
   sc.textContent = score.toFixed(2);
   sc.style.color = score > 0.6 ? '#ff8a8a' : (score > 0.4 ? '#ffae42' : '#5ee08a');
@@ -427,14 +357,15 @@ function renderL2(l2){
   if(score > 0.6){
     l2n++;
     const p=document.getElementById('l2-panel');
-    p.insertAdjacentHTML('afterbegin', `<div class="lv2">[异常] VAE+IF 异常分 ${score.toFixed(2)} 超阈 0.6</div>`);
+    p.insertAdjacentHTML('afterbegin', `<div class="lv2">[异常] 多参数联合异常分 ${score.toFixed(2)} 超过阈值 0.6</div>`);
     document.getElementById('l2-cnt').textContent = l2n;
     while(p.children.length>20) p.lastChild.remove();
   }
 }
 
+const LEVEL_CN = {red:'红色预警', orange:'橙色预警', yellow:'黄色预警', green:'正常'};
 function renderL3(d){
-  if(d==='diagnosing'){ document.getElementById('l3-area').innerHTML='<div class="muted lv3">L3 根因推理中（3~5s）...</div>'; return; }
+  if(d==='diagnosing'){ document.getElementById('l3-area').innerHTML='<div class="muted lv3">正在分析设备参数与检修记录…</div>'; return; }
   if(!d || typeof d !== 'object') return;
   // 去重：WS 帧与 pollLogs 双通道会送达同一份诊断（时间戳+根因一致即可判定）
   const lk = [(d.timestamp||''), d.root_cause].join('|');
@@ -442,7 +373,7 @@ function renderL3(d){
   if(renderL3.seen.has(lk)) return;
   renderL3.seen.add(lk);
   l3n++;
-  document.getElementById('wa-level').textContent = '级别 ' + (d.level||'orange').toUpperCase();
+  document.getElementById('wa-level').textContent = LEVEL_CN[d.level||'orange'] || d.level;
   const area = document.getElementById('l3-area');
   const ctx = d.context||{};
   const hc = d.hallucination_check||{};
@@ -455,7 +386,7 @@ function renderL3(d){
   // 特征值与统计特征（判断依据）
   const feats = ctx.features||{};
   const featTxt = Object.keys(feats).length
-    ? Object.entries(feats).map(([k,v])=>`${k}=${v}`).join(' · ')
+    ? Object.entries(feats).map(([k,v])=>`${(SENSORS_FULL.find(s=>s[0]===k)||[])[1]||k} ${v}`).join(' · ')
     : '无';
   const stats = ctx.stats||{};
   const statsTxt = Object.keys(stats).length
@@ -468,6 +399,7 @@ function renderL3(d){
     : '<div>近期无维修记录</div>';
   const evi = (d.evidence||[]).join('；') || '无';
   const gate = d.gate_action ? ` · 门控 ${d.gate_action}` : '';
+  area.querySelectorAll('.empty-state, :scope > .muted').forEach(el=>el.remove());
   area.insertAdjacentHTML('afterbegin', `
     <div class="wo">
       <div class="row"><b class="rc">${d.root_cause}</b> <span class="muted">置信度 ${(d.confidence*100).toFixed(0)}% · 物理${hc.physics?'✔':'✘'} 图谱${hc.kg?'✔':'✘'}${gate}</span></div>
@@ -496,6 +428,7 @@ function renderFH(wo){
   won++;
   document.getElementById('wo-cnt').textContent = won;
   const area = document.getElementById('fh-area');
+  area.querySelectorAll('.empty-state, :scope > .muted').forEach(el=>el.remove());
   // 未生成工单（正常数据/未升级）
   if(wo.handled === false){
     area.insertAdjacentHTML('afterbegin', `
@@ -514,7 +447,7 @@ function renderFH(wo){
   const partsTxt = (wo.spare_parts||[]).length ? wo.spare_parts.join('、') : '<span class="muted">—</span>';
   area.insertAdjacentHTML('afterbegin', `
     <div class="wo-big ${lv}">
-      <div class="row"><span class="tag t-${lv}">${lv.toUpperCase()}</span><b class="rc">${wo.root_cause}</b>
+      <div class="row"><span class="tag t-${lv}">${LEVEL_CN[lv]||lv}</span><b class="rc">${wo.root_cause}</b>
         <span class="muted">${wo.order_id}</span>
         <span class="muted" style="float:right">${(wo.trigger_time||'').slice(5,16)}</span></div>
       <div class="wo-grid">
@@ -586,14 +519,16 @@ async function resetStream(){
   document.getElementById('l1-cnt').textContent='0';
   document.getElementById('l2-cnt').textContent='0';
   document.getElementById('l3-cnt').textContent='0';
-  document.getElementById('anomaly-score').textContent='0.00';
+  document.getElementById('anomaly-score').textContent='--';
+  for(const id of ['m-inlet','m-out','m-press','m-flow','m-furn','m-hum']) setText(id, null);
+  setChartState('等待监测数据', false);
   const bar = document.getElementById('anomaly-bar');
   if(bar){ bar.style.width='0%'; bar.style.background='#5ee08a'; }
   document.getElementById('forecast-msg').textContent='等待预加载...';
   document.getElementById('forecast-msg').style.color='#5ec1ff';
   document.getElementById('trend-msg').textContent='';
   const di = document.getElementById('dew-ind');
-  if(di){ di.textContent='凝露监测中...'; di.style.color='#5ec1ff'; delete di.dataset.fired; }
+  if(di){ di.textContent='柜体凝露风险 · 等待数据'; di.style.color='#9bb8c7'; delete di.dataset.fired; }
   document.getElementById('pt-count2').textContent='0';
   // 清空曲线（当前传感器 + 预测）
   chart.setOption({xAxis:{data:[]}, series: buildSeries(buf, [])});
@@ -634,6 +569,8 @@ function setSensorMode(mode){
 }
 
 async function startStream(){
+  if(document.getElementById('btn-start').disabled) return;
+  document.getElementById('btn-start').disabled = true;
   streamEpoch++;               // 使上一轮的保底轮询定时器失效
   buf = { ts: [] };
   SENSORS.forEach(s=>{ buf[s[0]] = []; });
@@ -685,6 +622,7 @@ async function startStream(){
         return;
       }
       if(d.preload){                       // 预加载阶段
+        setChartState('正在准备回放数据', false);
         const fm=document.getElementById('forecast-msg');
         if(d.data_source==='upload'){      // 上传回放：无预载段，提示预测启用条件
           fm.innerHTML = `数据源 ${d.filename||''} 回放中 · 出水温度预测将在缓冲 ≥<b>${d.forecast_ready_at||'—'}</b> 点后自动启用`;
@@ -722,6 +660,7 @@ async function startStream(){
 // 流正常结束：服务端已在 done 前排空后台 L3/工单/反馈（_drain_and_done），
 // 此处仅更新界面状态；保底再轮询 45s，捕获极端慢速兜底落盘的结果
 function gracefulDone(){
+  setChartState('回放完成 · 保留本轮趋势', ptTotal > 0);
   gStop = true;
   try{ ws && ws.close(); }catch(e){}
   ws = null;
@@ -734,6 +673,7 @@ function gracefulDone(){
   }, 45000);
 }
 function stopStream(){
+  setChartState('已停止 · 最近一次观测', ptTotal > 0);
   streamEpoch++;               // 手动停止同样使保底定时器失效
   if(ws){ try{ws.close();}catch(e){} ws=null; }
   if(pollTimer){ clearInterval(pollTimer); pollTimer=null; }
@@ -762,6 +702,7 @@ function onFaultChange(val){
   const btn = document.getElementById('upload-btn');
   const isCustom = val === 'custom';
   if(btn) btn.classList.toggle('disabled', !isCustom);
+  document.getElementById('file-input').disabled = !isCustom;
   // 切回预设场景时清除上传数据源，避免与预设场景冲突
   if(!isCustom && uploadedData){
     uploadedData = null;
@@ -820,6 +761,7 @@ async function uploadFile(input){
 
 // 上传数据绘制到主曲线图（等间隔抽样，最多 2000 点，全部 12 传感器）
 function renderUploadChart(series){
+  setChartState('文件预览 · 开始监测后分析', true);
   lastForecast = null;
   buf = { ts: [] };
   SENSORS.forEach(s=>{ buf[s[0]] = []; });
@@ -842,15 +784,17 @@ async function health(){
   try{
     const r = await fetch('/api/v1/health').then(r=>r.json());
     document.getElementById('sys-status').innerHTML =
-      `LLM ${r.data.use_llm?'<span class="badge b-ok">已连接</span>':'<span class="badge b-warn">兜底模式</span>'}`;
+      r.data.use_llm?'<span class="badge b-ok">诊断服务已配置</span>':'<span class="badge b-warn">本地图谱诊断</span>';
   }catch(e){ document.getElementById('sys-status').innerHTML='<span class="badge b-warn">离线</span>'; }
 }
 window.addEventListener('resize', ()=>chart.resize());
+new ResizeObserver(()=>chart.resize()).observe(document.getElementById('chart'));
 health();
 // 初始化：默认非"自定义上传"，上传按钮禁用
 (function(){
   const btn = document.getElementById('upload-btn');
   if(btn) btn.classList.add('disabled');
+  document.getElementById('file-input').disabled = true;
 })();
 </script>
 </body>
