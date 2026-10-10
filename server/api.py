@@ -14,6 +14,7 @@ MCP（挂载于同一端口）：
 import asyncio
 import io
 import time
+from datetime import date
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -28,6 +29,7 @@ from pydantic import BaseModel, Field
 from config import get_logger, get_settings, setup_logging
 
 from .service import AgentService
+from .qa import KnowledgeQAAgent
 from .agents import (
     DataManagementAgent, WarningAnalysisAgent,
     FaultHandlingAgent, ContinuousOptimizerAgent,
@@ -75,6 +77,7 @@ app = FastAPI(
         {"name": "持续优化智能体", "description": "处置反馈归档 / 知识库更新 / 优化状态"},
         {"name": "编排工作流", "description": "四大智能体一键串联演示 / 智能体清单"},
         {"name": "实时流", "description": "WebSocket 实时监测与预警日志"},
+        {"name": "知识问答助手", "description": "传感器、监测工况、维修台账与处置说明查询"},
     ],
 )
 
@@ -132,6 +135,32 @@ class SimulateRequest(BaseModel):
 
 
 # ---------------- 接口 ----------------
+
+class QuestionRequest(BaseModel):
+    question: str = Field(..., min_length=1, max_length=1000)
+    history: List[str] = Field(default_factory=list, max_length=6,
+                               description="最近六条用户问题，用于解析追问")
+    keyword: Optional[str] = Field(None, max_length=100, description="维修查询关键词")
+    since: Optional[date] = Field(None, description="维修日期起点（含）")
+    until: Optional[date] = Field(None, description="维修日期终点（含）")
+
+
+@app.post("/api/v1/agents/knowledge-qa/ask", tags=["知识问答助手"],
+          summary="查询设备知识、当前工况及维修记录")
+def knowledge_ask(req: QuestionRequest):
+    try:
+        result = KnowledgeQAAgent(svc()).ask(req.question, req.history,
+                                             req.keyword, req.since, req.until)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"code": 0, "data": result}
+
+
+@app.get("/api/v1/monitoring/status", tags=["知识问答助手"],
+         summary="当前监测会话快照（不含预加载和上传预览）")
+def monitoring_status():
+    return {"code": 0, "data": svc().monitor.snapshot()}
+
 
 @app.get("/api/v1/health", tags=["健康检查"],
          summary="健康检查：服务状态与运行统计",
@@ -428,7 +457,8 @@ async def stream_ws(ws: WebSocket):
     """
     await ws.accept()
     s = svc()
-    s.reset_stream()
+    session_id = None
+    final_status = "stopped"
     logger.info("WebSocket 实时流接入 | client=%s", ws.client.host if ws.client else "unknown")
     try:
         req_raw = await ws.receive_json()
@@ -438,6 +468,10 @@ async def stream_ws(ws: WebSocket):
         duration = int(req_raw.get("duration", 1800))
         forecast_model = str(req_raw.get("forecast_model") or "").lower()
         data_source = str(req_raw.get("data_source") or "simulator").lower()
+        data_source = "upload" if data_source == "upload" else "simulator"
+        session_id = s.monitor.start(data_source, (s.uploaded_meta or {}).get("filename")
+                                     if data_source == "upload" else None)
+        s.reset_stream()
         logger.info("实时流参数 | fault=%s fault_start=%d speed=%.1f duration=%d "
                     "forecast_model=%s data_source=%s",
                     fault, fault_start, speed, duration, forecast_model, data_source)
@@ -456,6 +490,7 @@ async def stream_ws(ws: WebSocket):
         if data_source == "upload":
             rows = s.uploaded_data or []
             if not rows:
+                final_status = "error"
                 # 服务端上传缓存为空（如服务重启清空内存态）：发错误+结束帧，
                 # 让前端立即恢复按钮状态而不是挂着无输出
                 await ws.send_json({"error": "未找到已上传数据（服务可能已重启），请重新上传"})
@@ -480,9 +515,11 @@ async def stream_ws(ws: WebSocket):
             for row in rows:
                 out = await loop.run_in_executor(None, s.stream_step, dict(row))
                 await ws.send_json(out)
+                s.monitor.record(row, session_id)
                 pushed += 1
                 await asyncio.sleep(interval)
             await _drain_and_done(ws, s, {"points": pushed, "data_source": "upload"})
+            final_status = "completed"
             logger.info("上传数据回放完成 | 分析 %d 条", pushed)
             return
 
@@ -524,16 +561,25 @@ async def stream_ws(ws: WebSocket):
             if getattr(s, "tsdb_ok", False) and i % 10 == 0:
                 s.persist(row)
             await ws.send_json(out)
+            s.monitor.record(row, session_id)
             await asyncio.sleep(interval)
         await _drain_and_done(ws, s)
+        final_status = "completed"
         logger.info("实时流完成 | 推送 %d 条", duration)
     except WebSocketDisconnect:
         logger.info("实时流客户端断开 | client=%s", ws.client.host if ws.client else "unknown")
     except Exception as e:
         logger.exception("实时流异常: %s", e)
+        final_status = "error"
         try:
             await ws.send_json({"error": str(e)})
         except Exception:
+            pass
+    finally:
+        s.monitor.finish(session_id, final_status)
+        try:
+            await ws.close()
+        except (RuntimeError, WebSocketDisconnect):
             pass
 
 
@@ -547,9 +593,13 @@ def stream_logs():
 @app.post("/api/v1/stream/reset", tags=["实时流"],
          summary="重置实时流缓冲",
          description="清空实时流缓冲与预警日志，开始新一轮监测（新一轮 WebSocket 连接时自动执行）。")
-def stream_reset():
+async def stream_reset():
     """重置实时流缓冲与日志（新一次监测）。"""
-    svc().reset_stream()
+    s = svc()
+    if s.monitor.snapshot()['status'] in ('starting', 'running'):
+        raise HTTPException(status_code=409, detail="请先停止当前监测会话")
+    s.reset_stream()
+    s.monitor.reset()
     return {"code": 0, "data": {"reset": True}}
 
 

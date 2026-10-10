@@ -24,6 +24,7 @@ from reasoning import KnowledgeGraph, LLMClient, RootCauseReasoner
 from storage import TimeSeriesDB
 from tools.dew_point import CondensationPredictor, dew_point_margin
 from workflow import EarlyWarningPipeline
+from .monitoring import MonitorState
 
 logger = get_logger("server.service")
 
@@ -50,6 +51,7 @@ class AgentService:
         self.emergency = EmergencyPlanner()
         self.feedback_store = FeedbackStore(str(self.cfg.paths.feedback))
         self.use_llm = use_llm
+        self.monitor = MonitorState()
         # 实时数据缓存（供界面展示）
         self.latest_window: Optional[pd.DataFrame] = None
         self.latest_result = None

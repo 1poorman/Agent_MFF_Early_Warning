@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>中频炉水冷系统预警智能体</title>
+<link rel="stylesheet" href="/static/qa.css">
+<script src="/static/qa.js" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
@@ -114,7 +116,8 @@
 <body>
 <header>
   <h1>中频炉水冷系统预警智能体 · 四大智能体监控</h1>
-  <div><span id="sys-status">检测中...</span><span id="run-status"></span></div>
+  <div><span id="sys-status">检测中...</span><span id="run-status"></span>
+    <button id="qa-toggle" aria-controls="qa-panel" aria-expanded="false">知识问答</button></div>
 </header>
 
 <div class="controls">
@@ -226,6 +229,27 @@
     </div>
   </div>
 </div>
+
+<aside id="qa-panel" aria-labelledby="qa-title" hidden>
+  <div class="qa-heading">
+    <div><h2 id="qa-title">知识问答助手</h2><p>查询工况、维修记录与处置说明</p></div>
+    <button id="qa-close" aria-label="关闭知识问答">关闭</button>
+  </div>
+  <div id="qa-messages" role="log" aria-live="polite" aria-relevant="additions" tabindex="0"></div>
+  <div id="qa-suggestions" aria-label="建议问题"></div>
+  <form id="qa-form">
+    <details class="qa-filters">
+      <summary>维修记录筛选（仅用于维修查询）</summary>
+      <label>关键词<input id="qa-keyword" maxlength="100" placeholder="例如：3号阀"></label>
+      <div><label>起始日期<input id="qa-since" type="date"></label>
+        <label>结束日期<input id="qa-until" type="date"></label></div>
+    </details>
+    <label class="qa-input-label" for="qa-question">你的问题</label>
+    <textarea id="qa-question" rows="2" maxlength="1000" required placeholder="例如：过滤器堵塞怎么处理？"></textarea>
+    <div class="qa-actions"><span id="qa-status" role="status">Enter 发送 · Shift+Enter 换行</span>
+      <button type="button" id="qa-clear">清空对话</button><button class="primary" id="qa-send">发送</button></div>
+  </form>
+</aside>
 
 <script>
 const chart = echarts.init(document.getElementById('chart'), 'dark');
