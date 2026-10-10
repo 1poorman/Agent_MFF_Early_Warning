@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 510" aria-labelledby="topo-svg-title topo-svg-desc" role="group">
+  <title id="topo-svg-title">中频炉闭式水冷系统动态拓扑</title>
+  <desc id="topo-svg-desc">炉体与中频电源热回水汇入循环水箱，经主水泵和过滤器进入冷却塔盘管，冷却后沿供水分支返回设备。可选择设备查看测点和故障依据。</desc>
+  <defs>
+    <pattern id="topo-grid" width="24" height="24" patternUnits="userSpaceOnUse"><path d="M24 0H0V24" fill="none" stroke="#293b46" stroke-width=".5"/></pattern>
+    <pattern id="topo-water" width="20" height="12" patternUnits="userSpaceOnUse"><path d="M0 6Q5 0 10 6T20 6" fill="none" stroke="#68b5d0" opacity=".45"/></pattern>
+    <marker id="topo-arrow-cold" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="m1 1 7 4-7 4" fill="none" stroke="#70d7f1" stroke-width="2"/></marker>
+    <marker id="topo-arrow-hot" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="m1 1 7 4-7 4" fill="none" stroke="#ffa47e" stroke-width="2"/></marker>
+  </defs>
+  <rect width="960" height="510" rx="8" fill="url(#topo-grid)" opacity=".5"/>
+
+  <g data-node="pipework" class="topo-equipment topo-pipes" role="button" tabindex="0" aria-label="循环管路，查看共用压力、流量及疑似泄漏区域">
+    <title>循环管路 / 供水分支</title>
+    <path class="pipe-shell" d="M305 137H365V394H219 M305 286H365 M219 438H641V170H694"/>
+    <path class="pipe hot" d="M305 137H365V394H219 M305 286H365 M219 438H641V170H694"/>
+    <path class="pipe-flow hot-flow" d="M305 137H365V394H219 M305 286H365 M219 438H641V170H694"/>
+    <path class="pipe-shell" d="M694 350H600V102H305 M600 249H305"/>
+    <path class="pipe cold" d="M694 350H600V102H305 M600 249H305"/>
+    <path class="pipe-flow cold-flow" d="M694 350H600V102H305 M600 249H305"/>
+    <circle cx="365" cy="286" r="7" fill="#df765d"/><circle cx="600" cy="249" r="7" fill="#57abc8"/>
+    <path class="direction hot-direction" d="M365 313v32 M255 438h30 M641 285v-35 M657 170h25"/>
+    <path class="direction cold-direction" d="M600 217v-36 M532 102h-34 M532 249h-34"/>
+    <text x="430" y="77" class="pipe-label cold-label">冷却后供水</text>
+    <text x="430" y="101" data-value="inlet_temp" class="pipe-reading" transform="translate(0,26)">-- ℃</text>
+    <text x="415" y="328" class="pipe-label hot-label">设备热回水</text>
+    <text x="415" y="353" data-value="outlet_temp" class="pipe-reading">-- ℃</text>
+    <text x="437" y="196" class="sensor-label">管网压力 / 循环流量</text>
+    <text x="437" y="220" data-value="pressure" class="sensor-reading">-- kPa</text>
+    <text x="529" y="220" data-value="flow_rate" class="sensor-reading">-- L/s</text>
+    <g class="pipe-fault-marker" transform="translate(573 300)"><circle r="19"/><text y="7" text-anchor="middle">!</text></g>
+    <text x="453" y="285" data-state="pipework" class="node-state">共用管路 · 未观测</text>
+  </g>
+
+  <g data-node="furnaces" class="topo-equipment" role="button" tabindex="0" aria-label="炉一与炉二共用炉体测点，查看线圈积热与结垢相关信息">
+    <rect class="node-frame" x="49" y="39" width="258" height="135" rx="12"/>
+    <text x="66" y="64" class="node-title">炉体 / 感应线圈</text>
+    <g class="furnace-shape"><path d="M75 80h65l-6 53H81Z M173 80h65l-6 53h-53Z"/><path class="melt" d="M84 107h47l-3 20H88Z M182 107h47l-3 20h-39Z"/><path class="coil" d="M70 91h74m-74 13h74m-72 13h70 M168 91h74m-74 13h74m-72 13h70"/></g>
+    <text x="109" y="151" text-anchor="middle" class="node-label">炉一</text><text x="207" y="151" text-anchor="middle" class="node-label">炉二</text>
+    <text x="64" y="197" class="sensor-label">共用炉温</text><text x="144" y="197" data-value="furnace_temp" class="sensor-reading">-- ℃</text>
+    <text x="253" y="197" data-state="furnaces" class="node-state">未观测</text>
+  </g>
+
+  <g data-node="power" class="topo-equipment" role="button" tabindex="0" aria-label="中频电源及电气柜，查看负载、温湿度及凝露风险">
+    <rect class="node-frame" x="49" y="219" width="258" height="103" rx="12"/>
+    <rect x="67" y="236" width="43" height="65" rx="3" class="equipment-outline"/><path d="m91 246-11 22h12l-10 21" class="electric-symbol"/>
+    <text x="125" y="248" class="node-title">中频电源</text><text x="125" y="274" data-value="electric_power" class="sensor-reading">-- kW</text>
+    <text x="125" y="300" data-state="power" class="node-state">未观测</text>
+  </g>
+
+  <g data-node="tank" class="topo-equipment" role="button" tabindex="0" aria-label="循环水箱，查看液位与电导率">
+    <rect class="node-frame" x="68" y="351" width="153" height="129" rx="8"/>
+    <rect x="78" y="408" width="132" height="60" fill="#264652"/><rect x="78" y="408" width="132" height="60" fill="url(#topo-water)"/>
+    <path d="M78 409h132" stroke="#74bfd6" stroke-width="2"/>
+    <text x="86" y="378" class="node-title">循环水箱</text><text x="86" y="401" data-value="tank_level" class="sensor-reading">-- cm</text>
+    <text x="87" y="450" data-state="tank" class="node-state">未观测</text>
+  </g>
+  <g data-node="makeup" class="topo-equipment" role="button" tabindex="0" aria-label="补水阀及液位控制，未提供阀位反馈">
+    <path d="M14 393h54" stroke="#75b8cc" stroke-width="5"/>
+    <rect class="node-frame" x="15" y="369" width="44" height="46" rx="5"/>
+    <path d="m24 382 25 22v-22l-25 22Z" fill="#cfa970"/>
+    <text x="10" y="440" class="node-label">补水阀</text>
+  </g>
+
+  <g data-node="pump" class="topo-equipment" role="button" tabindex="0" aria-label="主水泵，查看压力震荡及气蚀诊断">
+    <rect class="node-frame" x="274" y="385" width="119" height="97" rx="12"/>
+    <text x="291" y="409" class="node-title">主水泵</text>
+    <circle cx="333" cy="442" r="24" class="pump-case"/>
+    <g class="topo-impeller"><path d="M333 424q22 8 2 18 M351 446q-14 18-18-1 M321 457q-8-20 9-16" fill="none" stroke="#9dcddc" stroke-width="5"/><circle cx="333" cy="442" r="5" fill="#d2e6ed"/></g>
+    <text x="281" y="501" data-state="pump" class="node-state">未观测</text>
+  </g>
+  <g data-node="filter" class="topo-equipment" role="button" tabindex="0" aria-label="循环过滤器，查看堵塞诊断；过滤器位置为监测示意">
+    <rect class="node-frame" x="437" y="385" width="123" height="97" rx="12"/>
+    <text x="456" y="409" class="node-title">过滤器</text>
+    <path d="M467 422h59l-13 39h-34Z" class="filter-body"/><path d="m474 427 30 31m-16-31 22 24m-38-10 16 17" stroke="#93b7c6" stroke-width="2"/>
+    <text x="445" y="501" data-state="filter" class="node-state">未观测</text>
+  </g>
+
+  <g data-node="tower" class="topo-equipment" role="button" tabindex="0" aria-label="闭式冷却塔换热器，查看冷却前后水温；风机与喷淋为过程示意">
+    <path class="node-frame" d="M696 109h35l17-32h111l16 32h37v353H696Z"/>
+    <text x="722" y="137" class="node-title">闭式冷却塔</text>
+    <g class="topo-fan"><path d="M803 103c-34-26-60-5-14 9-11 37 22 45 19 6 39-10 31-42-5-15" fill="#8399a4"/><circle cx="803" cy="108" r="7" fill="#263946" stroke="#c5d4db" stroke-width="2"/></g>
+    <path class="coil-shell" d="M696 170h174q18 0 18 17t-18 17H737q-18 0-18 17t18 17h133q18 0 18 17t-18 17H737q-18 0-18 17t18 17h133q18 0 18 17t-18 17H715v10h-19"/>
+    <path class="pipe-flow heat-exchange-flow" d="M696 170h174q18 0 18 17t-18 17H737q-18 0-18 17t18 17h133q18 0 18 17t-18 17H737q-18 0-18 17t18 17h133q18 0 18 17t-18 17H715v10h-19"/>
+    <path d="M714 153h178 M724 157l-5 9m5-9 5 9 M788 157l-5 9m5-9 5 9 M865 157l-5 9m5-9 5 9" stroke="#72b5d0" stroke-width="2" fill="none"/>
+    <path d="M715 388h177v57H715Z" fill="#253f49"/><path d="M715 397h177m-177 15h177m-177 15h177" stroke="#5f8d9e" stroke-dasharray="5 7"/>
+    <path d="M892 424V154" stroke="#669bae" stroke-width="4"/><circle cx="892" cy="427" r="13" fill="#507d91"/>
+    <text x="724" y="375" class="node-label">盘管换热 · 喷淋散热</text>
+    <text x="719" y="486" data-state="tower" class="node-state">未观测</text>
+  </g>
+  <g class="topo-air" aria-hidden="true"><path d="M759 69V37m44 27V27m43 42V37"/><path d="m753 44 6-7 6 7m32-10 6-7 6 7m37 17 6-7 6 7"/></g>
+  <text x="756" y="20" class="air-label">热量排向空气</text>
+  <text x="702" y="58" class="node-label">散热过程示意</text>
+</svg>

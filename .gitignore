@@ -75,3 +75,4 @@ tests/*
 !tests/test_hard_posttraining.py
 !tests/test_hard_analysis.py
 !tests/test_knowledge_qa.py
+!tests/test_topology.js

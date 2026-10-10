@@ -8,6 +8,9 @@
 <script src="/static/qa.js" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
 <link rel="stylesheet" href="/static/dashboard.css">
+<link rel="stylesheet" href="/static/topology.css">
+<script src="/static/topology-model.js"></script>
+<script src="/static/topology-view.js" defer></script>
 </head>
 <body>
 <header>
@@ -77,12 +80,19 @@
   <div class="card dm-card">
     <h2><span><span class="agent-tag">01 · 数据管理智能体</span>炉体与冷却回路</span>
         <span class="cnt" id="pt-count">0 点</span></h2>
-    <div class="cooling-circuit" aria-label="冷却回路示意：供水进入感应线圈，带走炉体热量后回水换热">
-      <div class="circuit-side"><span class="circuit-label">供水侧</span><b>进水 · 压力 · 流量</b></div>
-      <svg class="circuit-furnace" viewBox="0 0 160 74" aria-hidden="true"><path d="M0 25h43m74 0h43" stroke="#76b7ca" stroke-width="2"/><path d="m35 21 8 4-8 4m117-8 8 4-8 4" fill="none" stroke="#76b7ca" stroke-width="2"/><path d="M54 8h52l-5 48H59Z" fill="#e9a34b0f" stroke="#b0b9bf" stroke-width="2"/><path d="M64 31h32l-2 17H66Z" fill="#e9a34b" opacity=".65"/><path d="M51 19h58m-60 9h62m-60 9h58m-56 9h54" stroke="#e9a34b" stroke-width="2"/><path d="M66 62h28" stroke="#b0b9bf" stroke-width="2"/><path d="M12 40v28h136V40" stroke="#76b7ca" stroke-width="1" stroke-dasharray="4 4" fill="none"/></svg>
-      <div class="circuit-side"><span class="circuit-label">回水侧</span><b>出水 · 换热</b></div>
-      <span class="circuit-caption">感应线圈水冷示意</span>
+    <div class="monitor-tabs" role="tablist" aria-label="监测视图">
+      <button id="topology-tab" role="tab" aria-selected="true" aria-controls="topology-view">水冷拓扑</button>
+      <button id="curves-tab" role="tab" aria-selected="false" aria-controls="curves-view" tabindex="-1">参数曲线</button>
     </div>
+    <section id="topology-view" class="topology-view" role="tabpanel" aria-labelledby="topology-tab">
+      <div class="topology-toolbar"><span id="topology-status">等待监测</span><span id="topology-time">暂无本轮观测</span><button id="topology-expand" type="button">放大拓扑</button></div>
+      <div id="topology-drawing">正在加载水冷系统拓扑…</div>
+      <div class="topology-legend"><span><i></i>冷却供水</span><span><i class="hot-key"></i>热回水</span><span><i class="warning-key"></i>预警区域</span><span><i class="fault-key"></i>诊断指向</span><span id="topology-flow-note">水流动画按共用流量示意</span></div>
+      <div id="topology-alerts" role="status" aria-live="polite"></div>
+      <div class="topology-detail"><h3 id="topology-detail-title">循环管路</h3><p id="topology-detail-metrics"></p><p id="topology-detail-evidence"></p><p id="topology-detail-note"></p></div>
+      <p class="topology-footer">依据水冷系统示例图整理；过滤器为补充监测点。共用测点不区分炉一、炉二，风机与水泵动画为过程示意。</p>
+    </section>
+    <section id="curves-view" class="curves-view" role="tabpanel" aria-labelledby="curves-tab" hidden>
     <div class="metrics">
       <div class="metric"><div class="l">进水温度 <small>℃</small></div><div class="v" id="m-inlet">--</div></div>
       <div class="metric metric-warm"><div class="l">出水温度 <small>℃</small></div><div class="v" id="m-out">--</div></div>
@@ -94,6 +104,7 @@
     <div class="chart-heading"><h3>冷却回路运行趋势</h3><span id="chart-state">等待监测数据</span></div>
     <div class="chart-wrap"><div id="chart"></div><div id="chart-empty"><b>从一个熔炼工况开始</b><span>选择演示工况，点击“开始监测”<br>观察冷却参数、预警与检修处置过程</span></div></div>
     <div class="qline"><span>已接收 <b id="pt-count2">0</b> 条 · <b>1 Hz</b></span><span>虚线表示预测趋势</span></div>
+    </section>
   </div>
 
   <!-- ② 预警分析智能体 -->
@@ -149,6 +160,8 @@
   </div>
 </div>
 
+<dialog id="topology-dialog" aria-label="放大查看水冷系统拓扑"></dialog>
+
 <aside id="qa-panel" aria-labelledby="qa-title" hidden>
   <div class="qa-heading">
     <div><h2 id="qa-title">设备知识问答</h2><p>中频炉工况 · 检修记录 · 故障处置</p></div>
@@ -171,7 +184,7 @@
 </aside>
 
 <script>
-const chart = echarts.init(document.getElementById('chart'), 'dark');
+const chart = echarts.init(document.getElementById('chart'), 'dark', {width:640,height:280});
 const MAXP = 150;
 // 12 个数值传感器（13 采集字段中 operating_condition 为工况标签非数值）
 const SENSORS_FULL = [
@@ -365,6 +378,7 @@ function renderL2(l2){
 
 const LEVEL_CN = {red:'红色预警', orange:'橙色预警', yellow:'黄色预警', green:'正常'};
 function renderL3(d){
+  window.coolingTopology?.diagnosis(d);
   if(d==='diagnosing'){ document.getElementById('l3-area').innerHTML='<div class="muted lv3">正在分析设备参数与检修记录…</div>'; return; }
   if(!d || typeof d !== 'object') return;
   // 去重：WS 帧与 pollLogs 双通道会送达同一份诊断（时间戳+根因一致即可判定）
@@ -477,8 +491,10 @@ function renderCO(co){
 let lastLogLen = {l3:0, wo:0, co:0};
 async function pollLogs(){
   if(!ws) return;
+  const epoch=streamEpoch;
   try{
     const r = await fetch('/api/v1/stream/logs').then(r=>r.json());
+    if(epoch!==streamEpoch) return;
     const d = r.data;
     if(d.l3.length > lastLogLen.l3){
       for(const x of d.l3.slice(lastLogLen.l3)) renderL3(x);
@@ -504,6 +520,7 @@ async function resetStream(){
   try{ await fetch('/api/v1/stream/reset', {method:'POST'}); }
   catch(e){ console.warn('reset stream 请求失败(忽略):', e); }   // 失败不阻塞 UI
   lastLogLen = {l3:0, wo:0, co:0};
+  window.coolingTopology?.reset();
   l1n=l2n=l3n=won=ptTotal=0;
   lastForecast = null;
   gStop=false;
@@ -572,13 +589,18 @@ async function startStream(){
   if(document.getElementById('btn-start').disabled) return;
   document.getElementById('btn-start').disabled = true;
   streamEpoch++;               // 使上一轮的保底轮询定时器失效
+  const epoch=streamEpoch;
   buf = { ts: [] };
   SENSORS.forEach(s=>{ buf[s[0]] = []; });
   try{ await resetStream(); }catch(e){ console.warn('reset 失败(忽略):', e); }
+  if(epoch!==streamEpoch)return;
+  window.coolingTopology?.start(uploadedData!==null ? 'upload' : 'simulator');
   try{
     const proto = location.protocol==='https:'?'wss':'ws';
     ws = new WebSocket(`${proto}://${location.host}/ws/stream`);
+    const socket=ws;
     ws.onopen = ()=>{
+      if(epoch!==streamEpoch){socket.close();return;}
       const faultSel = document.getElementById('fault').value;
       // 有上传数据源则回放该数据（数据源即故障场景）；否则用物理仿真 + 故障注入
       const useUpload = uploadedData !== null;
@@ -589,6 +611,7 @@ async function startStream(){
         ws.close(); ws=null;
         document.getElementById('run-status').innerHTML='<span class="badge b-warn">未就绪</span>';
         document.getElementById('btn-start').disabled=false;
+        window.coolingTopology?.finish('error');
         return;
       }
       document.getElementById('run-status').innerHTML='<span class="badge b-run">监测中</span>';
@@ -604,6 +627,7 @@ async function startStream(){
       }));
     };
     ws.onmessage = (e)=>{
+      if(epoch!==streamEpoch)return;
       const d = JSON.parse(e.data);
       if(d.done){ gracefulDone(); return; }
       if(d.error){
@@ -611,6 +635,7 @@ async function startStream(){
         const st=document.getElementById('run-status');
         st.innerHTML='<span class="badge b-warn">流错误</span>';
         stopStream();
+        window.coolingTopology?.finish('error');
         alert('监测中断：' + d.error);
         return;
       }
@@ -641,18 +666,21 @@ async function startStream(){
         }
         return;
       }
-      pushPoint(d);
-      renderL1(d.l1); renderL2(d.l2); renderL3(d.l3);
-      renderDew(d.dew);
+      window.coolingTopology?.frame(d);
+      if(d.metrics && Object.keys(d.metrics).length){
+        pushPoint(d);renderL1(d.l1);renderL2(d.l2);renderDew(d.dew);
+      }
+      renderL3(d.l3);
       renderFH(d.work_order); renderCO(d.optimization);
     };
-    ws.onclose = ()=>{ if(!gStop) stopStream(); };
-    ws.onerror = ()=>{ if(!gStop) stopStream(); };
+    ws.onclose = ()=>{ if(epoch===streamEpoch && !gStop) stopStream(); };
+    ws.onerror = ()=>{ if(epoch===streamEpoch && !gStop){stopStream();window.coolingTopology?.finish('error');} };
   }catch(e){
     console.error('启动 WebSocket 失败:', e);
     document.getElementById('run-status').innerHTML='<span class="badge b-warn">连接失败</span>';
     document.getElementById('btn-start').disabled=false;
     document.getElementById('btn-stop').disabled=true;
+    window.coolingTopology?.finish('error');
   }
   pollTimer = setInterval(pollLogs, 3000);
 }
@@ -660,6 +688,7 @@ async function startStream(){
 // 流正常结束：服务端已在 done 前排空后台 L3/工单/反馈（_drain_and_done），
 // 此处仅更新界面状态；保底再轮询 45s，捕获极端慢速兜底落盘的结果
 function gracefulDone(){
+  window.coolingTopology?.finish('completed');
   setChartState('回放完成 · 保留本轮趋势', ptTotal > 0);
   gStop = true;
   try{ ws && ws.close(); }catch(e){}
@@ -673,6 +702,7 @@ function gracefulDone(){
   }, 45000);
 }
 function stopStream(){
+  window.coolingTopology?.finish('stopped');
   setChartState('已停止 · 最近一次观测', ptTotal > 0);
   streamEpoch++;               // 手动停止同样使保底定时器失效
   if(ws){ try{ws.close();}catch(e){} ws=null; }
@@ -761,6 +791,7 @@ async function uploadFile(input){
 
 // 上传数据绘制到主曲线图（等间隔抽样，最多 2000 点，全部 12 传感器）
 function renderUploadChart(series){
+  window.coolingTopology?.preview();
   setChartState('文件预览 · 开始监测后分析', true);
   lastForecast = null;
   buf = { ts: [] };
